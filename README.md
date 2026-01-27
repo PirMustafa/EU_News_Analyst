@@ -1,27 +1,27 @@
-# 🇪🇺 EU News Analyst - RAG-Powered Intelligence Platform
+# EU News Analyst - RAG-Powered Intelligence Platform
 
 A cutting-edge **Retrieval-Augmented Generation (RAG)** system for analyzing European Union news with AI-powered insights. Powered by Google Gemini and FAISS vector database, this platform delivers real-time intelligence with voice interaction capabilities.
 
 ---
 
-## ✨ Features
+## Features
 
-### 🤖 **AI-Powered Analysis**
+### AI-Powered Analysis
 - **Google Gemini Integration** - Advanced LLM for comprehensive news analysis
 - **RAG Architecture** - Retrieves relevant articles and generates contextually accurate responses
 - **Multi-Language Support** - Understands and analyzes news from across the EU
 
-### 🔍 **Smart Data Retrieval**
+### Smart Data Retrieval
 - **FAISS Vector Database** - Ultra-fast semantic search for news articles
 - **Intelligent Indexing** - Optimized embeddings for precise article matching
 - **Real-time Updates** - Continuously scrapes and indexes the latest EU news
 
-### 🎙️ **Voice Capabilities**
+### Voice Capabilities
 - **Speech Recognition** - Query news using voice input
 - **Text-to-Speech** - Listen to analysis summaries with Edge TTS
 - **Natural Interaction** - Conversational interface for accessibility
 
-### 📰 **News Aggregation**
+### News Aggregation
 - **Multi-Source Scraping** - Aggregates from:
   - Politico EU
   - Euronews
@@ -31,14 +31,14 @@ A cutting-edge **Retrieval-Augmented Generation (RAG)** system for analyzing Eur
 - **Historical Data** - 30-day rolling archive with 400+ articles
 - **Automatic Updates** - Scheduled data refresh with duplicate detection
 
-### 🎨 **Modern UI**
+### Modern User Interface
 - **Cyberpunk Design** - Sleek dark theme with gradient backgrounds
 - **Real-time Chat** - Interactive conversation with response streaming
 - **Responsive Layout** - Optimized for desktop and mobile devices
 
 ---
 
-## 🛠️ Tech Stack
+## Technology Stack
 
 | Component | Technology |
 |-----------|-----------|
@@ -53,7 +53,7 @@ A cutting-edge **Retrieval-Augmented Generation (RAG)** system for analyzing Eur
 
 ---
 
-## 📋 Project Structure
+## Project Structure
 
 ```
 EU_News_Analyst/
@@ -69,7 +69,7 @@ EU_News_Analyst/
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
 ### Prerequisites
 - Python 3.13+
@@ -113,7 +113,7 @@ EU_News_Analyst/
 
 ---
 
-## 📊 Data Pipeline
+## Data Pipeline
 
 ```
 RSS Feeds & Web Sources
@@ -135,7 +135,7 @@ RSS Feeds & Web Sources
 
 ---
 
-## 💬 Usage Examples
+## Usage Examples
 
 ### Text Query
 ```
@@ -157,7 +157,7 @@ Query: "What are the latest developments in EU energy policy?"
 
 ---
 
-## 🔧 Configuration
+## Configuration
 
 ### Environment Variables
 ```env
@@ -173,7 +173,7 @@ NEWS_DATA_PATH=./eu_news_data.json
 
 ---
 
-## 📈 Performance Metrics
+## Performance Metrics
 
 - **Search Speed**: <100ms for semantic queries (FAISS)
 - **Response Generation**: ~2-5s with Gemini API
@@ -182,7 +182,7 @@ NEWS_DATA_PATH=./eu_news_data.json
 
 ---
 
-## 🤝 Contributing
+## Contributing
 
 Contributions are welcome! Areas for enhancement:
 - [ ] Multi-language query support
@@ -194,13 +194,13 @@ Contributions are welcome! Areas for enhancement:
 
 ---
 
-## 📝 License
+## License
 
 This project is open-source. Respect news source attribution and terms of service.
 
 ---
 
-## 📞 Support & Troubleshooting
+## Support and Troubleshooting
 
 ### Common Issues
 
@@ -224,7 +224,7 @@ python scrape_eu_news.py
 
 ---
 
-## 🌟 Roadmap
+## Roadmap
 
 - [ ] **v2.0**: Real-time streaming news feed
 - [ ] **v2.0**: Advanced NER for entity tracking
@@ -234,7 +234,7 @@ python scrape_eu_news.py
 
 ---
 
-## 📚 Resources
+## Resources
 
 - [Google Generative AI Docs](https://ai.google.dev/)
 - [FAISS Documentation](https://github.com/facebookresearch/faiss)
@@ -243,6 +243,6 @@ python scrape_eu_news.py
 
 ---
 
-**Built with ❤️ for EU Intelligence Analysis**
+**Built for EU Intelligence Analysis**
 
 *Last Updated: January 27, 2026*
