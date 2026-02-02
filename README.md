@@ -545,6 +545,66 @@ What are EU member states' positions on migration policy reform?
    |-- Return formatted response
 ```
 
+### Two-Tier RAG Response System
+
+The system implements an intelligent two-tier response mechanism that adapts to the user's query intent:
+
+**Tier 1: Overview Mode**
+
+Triggered by queries asking for general news briefings, headlines, or summaries:
+- Keywords detected: "news", "headlines", "briefing", "today", "what's happening", "summary"
+- Response format: Bullet-point headlines with brief analysis
+- Purpose: Quick situational awareness without overwhelming detail
+
+Example queries for Overview Mode:
+```
+What's in the news today?
+Give me the EU headlines
+Brief me on today's developments
+What's happening in the European Union?
+```
+
+**Tier 2: Detailed Analysis Mode**
+
+Triggered by specific questions about topics, policies, or events:
+- Activated when query asks about a particular subject
+- Response format: Comprehensive analysis with key facts, stakeholders, implications
+- Purpose: Deep-dive investigation when user wants full context
+
+Example queries for Detailed Mode:
+```
+Tell me more about the AI Act implementation
+What are the details on the ECB interest rate decision?
+Explain the EU agricultural policy changes
+```
+
+**Query Detection Logic**
+
+The `detect_query_type()` function analyzes queries to route them appropriately:
+
+```python
+def detect_query_type(query: str) -> str:
+    """
+    Detect if query is asking for overview/headlines or detailed analysis.
+    
+    Returns:
+        'overview' - for general news/headline queries
+        'detailed' - for specific topic deep-dives
+    """
+    query_lower = query.lower()
+    overview_keywords = [
+        'news', 'headlines', 'briefing', 'today', 
+        "what's happening", 'summary', 'brief me',
+        'update', 'latest', 'what happened'
+    ]
+    return 'overview' if any(kw in query_lower for kw in overview_keywords) else 'detailed'
+```
+
+This two-tier approach optimizes the user experience by:
+1. Reducing response latency for simple briefing requests
+2. Preserving analytical depth for investigative queries
+3. Encouraging natural conversational flow (overview → follow-up → deep-dive)
+
 ---
 
 ## Voice Assistant

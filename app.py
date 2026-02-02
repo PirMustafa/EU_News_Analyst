@@ -190,9 +190,25 @@ def load_dependencies():
     return genai, faiss, pickle
 
 # --- API SETUP ---
-api_key = os.getenv('GOOGLE_API_KEY')
+# Try multiple sources for API key: secrets, env var, or fallback
+api_key = None
+
+# 1. Try Streamlit secrets first
+try:
+    api_key = st.secrets.get("GOOGLE_API_KEY")
+except:
+    pass
+
+# 2. Try environment variable
 if not api_key:
-    st.error("CRITICAL: GOOGLE_API_KEY environment variable is missing. Please set it and restart.")
+    api_key = os.getenv('GOOGLE_API_KEY')
+
+# 3. Fallback to hardcoded key (for development)
+if not api_key:
+    api_key = "AIzaSyARdSFJJChAWGAv38mICrYohancGw0YIG8"
+
+if not api_key:
+    st.error("CRITICAL: No API key found. Please set GOOGLE_API_KEY in secrets or environment.")
     st.stop()
 
 genai, faiss, pickle = load_dependencies()
@@ -286,144 +302,251 @@ def speech_to_text(audio_bytes):
     except Exception as e:
         return None
 
+# --- QUERY TYPE DETECTION ---
+def detect_query_type(query, conversation_history):
+    """Detect if user wants overview/headlines or detailed analysis."""
+    query_lower = query.lower().strip()
+    
+    # Overview/headlines patterns
+    overview_patterns = [
+        "what's the news", "whats the news", "what is the news",
+        "today's news", "todays news", "news today",
+        "headlines", "what's happening", "whats happening",
+        "give me the news", "show me the news", "latest news",
+        "briefing", "summary", "overview", "what's new", "whats new",
+        "any news", "news update", "daily briefing", "morning briefing"
+    ]
+    
+    # Check if this is an overview request
+    for pattern in overview_patterns:
+        if pattern in query_lower:
+            return "overview"
+    
+    # If there's conversation history with headlines, and user asks about specific topic
+    if conversation_history and len(conversation_history) > 0:
+        # Check if user is asking about something mentioned in previous headlines
+        return "detailed"
+    
+    # Default to overview for short/vague queries, detailed for specific ones
+    if len(query.split()) <= 5 and not any(word in query_lower for word in ['why', 'how', 'explain', 'details', 'more about', 'tell me about']):
+        return "overview"
+    
+    return "detailed"
+
 # --- INTELLIGENCE ANALYST FUNCTION ---
-def analyze_query(query, news_data, index, items):
-    """Generate detailed intelligence analysis with analyst thoughts."""
+def analyze_query(query, news_data, index, items, query_type="auto", conversation_history=None):
+    """Generate intelligence analysis - either overview or detailed."""
+    
+    # Auto-detect query type if not specified
+    if query_type == "auto":
+        query_type = detect_query_type(query, conversation_history or [])
     
     # Get today's news
     todays_news = [a for a in news_data if a.get('date', '').strip() == DATE_STR]
     
-    # Also search FAISS for relevant historical context
-    query_emb = get_embedding(query)
-    relevant_chunks = []
-    if query_emb and index:
-        query_array = np.array([query_emb], dtype=np.float32)
-        distances, indices = index.search(query_array, 10)
-        for idx in indices[0]:
-            if idx < len(items):
-                relevant_chunks.append(items[idx])
-    
-    # Build comprehensive context
-    if not todays_news and not relevant_chunks:
+    if not todays_news:
         return {
             "analysis": f"No news data available for {DATE_STR}. The archive may need to be updated by running the scraper.",
-            "thoughts": "Unable to provide analysis without current news data.",
-            "sources": []
+            "thoughts": "",
+            "sources": [],
+            "query_type": query_type
         }
     
-    # Create detailed context
-    context_parts = []
     sources = []
-    
-    # Add today's full articles
-    for article in todays_news[:8]:
-        context_parts.append(f"""
-ARTICLE: {article.get('title', 'Untitled')}
-SOURCE: {article.get('source', 'Unknown')}
-DATE: {article.get('date', DATE_STR)}
-CONTENT: {article.get('content', '')}
----""")
+    for article in todays_news[:10]:
         sources.append({
             'title': article.get('title', 'Untitled'),
             'source': article.get('source', 'Unknown'),
             'date': article.get('date', DATE_STR),
-            'link': article.get('link', '')
+            'link': article.get('link', ''),
+            'content': article.get('content', '')[:300]
         })
     
-    # Add relevant historical chunks for context
-    for chunk in relevant_chunks[:5]:
-        if chunk['meta'].get('title') not in [s['title'] for s in sources]:
+    if query_type == "overview":
+        # --- OVERVIEW MODE: Headlines + Brief Summary ---
+        headlines_list = "\n".join([
+            f"{i+1}. **{article.get('title', 'Untitled')}** ({article.get('source', 'Unknown')})"
+            for i, article in enumerate(todays_news[:10])
+        ])
+        
+        # Create brief context for analysis
+        brief_context = "\n".join([
+            f"- {article.get('title', '')}: {article.get('content', '')[:200]}..."
+            for article in todays_news[:8]
+        ])
+        
+        overview_prompt = f"""You are an EU news briefing assistant. Provide a concise daily briefing.
+
+TODAY'S DATE: {DATE_STR}
+TOTAL ARTICLES: {len(todays_news)}
+
+TODAY'S HEADLINES:
+{headlines_list}
+
+BRIEF CONTENT:
+{brief_context}
+
+Provide a response in this EXACT format:
+
+## Today's EU News Briefing ({DATE_STR})
+
+**{len(todays_news)} articles published today**
+
+### Top Stories
+
+[List the 3-5 most important stories with ONE sentence each explaining why they matter]
+
+### Quick Analysis
+
+[2-3 sentences on the main themes or trends across today's news]
+
+### Want to Know More?
+
+Ask me about any specific story for detailed analysis. For example:
+- "Tell me more about [topic]"
+- "What are the details on [headline]?"
+
+Keep it brief and scannable. No deep analysis yet - save that for when they ask."""
+
+        try:
+            model = genai.GenerativeModel("gemini-2.0-flash")
+            response = model.generate_content(overview_prompt)
+            
+            return {
+                "analysis": response.text,
+                "thoughts": "",
+                "sources": sources,
+                "query_type": "overview"
+            }
+        except Exception as e:
+            try:
+                model = genai.GenerativeModel("gemini-2.5-flash")
+                response = model.generate_content(overview_prompt)
+                return {
+                    "analysis": response.text,
+                    "thoughts": "",
+                    "sources": sources,
+                    "query_type": "overview"
+                }
+            except Exception as e2:
+                return {
+                    "analysis": f"Error generating overview: {str(e2)}",
+                    "thoughts": "",
+                    "sources": sources,
+                    "query_type": "overview"
+                }
+    
+    else:
+        # --- DETAILED MODE: Deep dive on specific topic ---
+        
+        # Search FAISS for relevant content
+        query_emb = get_embedding(query)
+        relevant_chunks = []
+        if query_emb and index:
+            query_array = np.array([query_emb], dtype=np.float32)
+            distances, indices = index.search(query_array, 10)
+            for idx in indices[0]:
+                if idx < len(items):
+                    relevant_chunks.append(items[idx])
+        
+        # Find articles matching the query topic
+        matching_articles = []
+        query_words = set(query.lower().split())
+        for article in todays_news:
+            title_words = set(article.get('title', '').lower().split())
+            content_words = set(article.get('content', '')[:500].lower().split())
+            # Check for word overlap
+            if len(query_words & title_words) >= 1 or len(query_words & content_words) >= 2:
+                matching_articles.append(article)
+        
+        # If no direct matches, use FAISS results
+        if not matching_articles and relevant_chunks:
+            # Get articles from chunks
+            chunk_titles = [c['meta'].get('title') for c in relevant_chunks[:5]]
+            matching_articles = [a for a in todays_news if a.get('title') in chunk_titles]
+        
+        # If still no matches, use top articles
+        if not matching_articles:
+            matching_articles = todays_news[:5]
+        
+        # Build detailed context
+        context_parts = []
+        for article in matching_articles[:5]:
             context_parts.append(f"""
-RELATED CONTEXT: {chunk['meta'].get('title', 'Untitled')}
-DATE: {chunk['meta'].get('date', 'Unknown')}
-EXCERPT: {chunk['text'][:500]}
+ARTICLE: {article.get('title', 'Untitled')}
+SOURCE: {article.get('source', 'Unknown')}
+DATE: {article.get('date', DATE_STR)}
+FULL CONTENT: {article.get('content', '')}
 ---""")
-    
-    full_context = "\n".join(context_parts)
-    
-    # Analyst prompt for detailed analysis with thoughts
-    analyst_prompt = f"""You are a senior intelligence analyst at a European policy institute. 
-Your role is to provide detailed, nuanced briefings on EU affairs.
+        
+        full_context = "\n".join(context_parts)
+        
+        detailed_prompt = f"""You are a senior EU policy analyst providing detailed analysis.
 
 TODAY'S DATE: {DATE_STR}
 
-INTELLIGENCE BRIEFING MATERIALS:
+USER QUESTION: {query}
+
+RELEVANT ARTICLES:
 {full_context}
 
-USER QUERY: {query}
+Provide a detailed analysis with:
 
-Provide your response in the following structure:
+## Detailed Analysis
 
-1. EXECUTIVE SUMMARY
-Start with a clear, concise summary of the key points relevant to the query.
+### Key Facts
+[Bullet points of the most important facts from the articles]
 
-2. DETAILED ANALYSIS
-Provide in-depth analysis covering:
-- Key developments and their significance
-- Stakeholders involved and their positions
-- Policy implications
-- Economic or social impacts where relevant
+### What's Happening
+[Explain the situation in detail - who, what, when, where]
 
-3. CONTEXTUAL BACKGROUND
-Explain any necessary background information that helps understand the current developments.
+### Why It Matters
+[Explain the significance and implications]
 
-4. FORWARD OUTLOOK
-What are the likely next steps or developments to watch?
+### Stakeholders & Positions
+[Key players and their stances]
 
-IMPORTANT GUIDELINES:
-- Be thorough and detailed - this is a professional intelligence briefing
-- Use formal, analytical language
-- Do not use emojis or casual expressions
-- Connect dots between different pieces of information
-- Highlight contradictions or tensions if they exist
-- Be specific with facts, figures, and dates mentioned in the sources
-- If information is limited, acknowledge gaps in intelligence"""
+### What to Watch
+[Future developments to monitor]
 
-    thoughts_prompt = f"""You are a senior intelligence analyst reviewing the following news materials.
+Be thorough but focused on what the user asked. Use information from the articles.
+If the articles don't contain enough information, say so."""
 
-NEWS MATERIALS:
+        thoughts_prompt = f"""Based on these articles about "{query}":
+
 {full_context}
 
-USER QUERY: {query}
+In 2-3 sentences, what's the key insight an analyst should note?"""
 
-Based on these materials, share your professional assessment:
-
-1. What patterns or trends do you observe in the reporting?
-2. What are the underlying dynamics at play?
-3. What aspects deserve closer monitoring going forward?
-4. What questions remain unanswered by the available intelligence?
-
-Keep your thoughts concise but insightful. Do not use emojis. Be analytical and professional."""
-
-    try:
-        # Generate main analysis
-        model = genai.GenerativeModel("gemini-2.0-flash")
-        analysis_response = model.generate_content(analyst_prompt)
-        
-        # Generate analyst thoughts
-        thoughts_response = model.generate_content(thoughts_prompt)
-        
-        return {
-            "analysis": analysis_response.text,
-            "thoughts": thoughts_response.text,
-            "sources": sources
-        }
-    except Exception as e:
         try:
-            model = genai.GenerativeModel("gemini-1.5-flash")
-            analysis_response = model.generate_content(analyst_prompt)
+            model = genai.GenerativeModel("gemini-2.0-flash")
+            analysis_response = model.generate_content(detailed_prompt)
             thoughts_response = model.generate_content(thoughts_prompt)
+            
             return {
                 "analysis": analysis_response.text,
                 "thoughts": thoughts_response.text,
-                "sources": sources
+                "sources": sources[:5],
+                "query_type": "detailed"
             }
-        except Exception as e2:
-            return {
-                "analysis": f"Analysis generation failed: {str(e2)}",
-                "thoughts": "Unable to generate analyst thoughts.",
-                "sources": sources
-            }
+        except Exception as e:
+            try:
+                model = genai.GenerativeModel("gemini-2.5-flash")
+                analysis_response = model.generate_content(detailed_prompt)
+                thoughts_response = model.generate_content(thoughts_prompt)
+                return {
+                    "analysis": analysis_response.text,
+                    "thoughts": thoughts_response.text,
+                    "sources": sources[:5],
+                    "query_type": "detailed"
+                }
+            except Exception as e2:
+                return {
+                    "analysis": f"Analysis generation failed: {str(e2)}",
+                    "thoughts": "",
+                    "sources": sources[:5],
+                    "query_type": "detailed"
+                }
 
 # --- INITIALIZE SESSION STATE ---
 if "messages" not in st.session_state:
@@ -610,11 +733,23 @@ if user_input and index is not None:
     
     # Show processing status
     with st.status("Processing your query...", expanded=True) as status:
-        st.write("Searching intelligence database...")
+        st.write("Analyzing your question...")
         
-        # Generate analysis
-        result = analyze_query(user_input, news_data, index, items)
-        st.write("Analysis complete.")
+        # Generate analysis with conversation history for context
+        result = analyze_query(
+            user_input, 
+            news_data, 
+            index, 
+            items,
+            query_type="auto",
+            conversation_history=st.session_state.messages
+        )
+        
+        query_type = result.get('query_type', 'detailed')
+        if query_type == 'overview':
+            st.write("Generating headlines briefing...")
+        else:
+            st.write("Generating detailed analysis...")
         
         # Generate voice if enabled
         audio_data = None
@@ -644,18 +779,7 @@ if user_input and index is not None:
 
 # --- WELCOME MESSAGE ---
 if not st.session_state.messages:
-    st.markdown("""
-    <div style="text-align: center; padding: 3rem; color: #64748b;">
-        <h3>Welcome to the EU Intelligence Briefing System</h3>
-        <p>Ask questions about European Union news, policy developments, economic updates, or current events.</p>
-        <p style="font-size: 0.9rem; margin-top: 1rem;">
-            Examples:<br>
-            "What are the latest developments in EU technology regulation?"<br>
-            "Summarize today's major EU policy announcements"<br>
-            "What is happening with EU-US trade relations?"
-        </p>
-    </div>
-    """, unsafe_allow_html=True)
+    pass  # No welcome message - clean interface
 
 # --- FOOTER ---
 st.markdown("---")
