@@ -1,141 +1,229 @@
 import json
 import os
+import requests
 import feedparser
-import time
-import random
 from datetime import datetime, timedelta
+from bs4 import BeautifulSoup, SoupStrainer
+import time
+import re
 
 # --- CONFIGURATION ---
-OUTPUT_FILE = r"D:\NLP_Projects\Text_Mining_RAG\eu_news_data.json"
-TARGET_TOTAL_ARTICLES = 400  # We will force the script to hit this number
+OUTPUT_FILE = r"D:\NLP_Projects\EU_News_Analyst\eu_news_data.json"
+TARGET_TOTAL_ARTICLES = 500
 
 # Dynamic Dates
 TODAY = datetime.now()
-START_DATE = TODAY - timedelta(days=30) # 1 Month ago
+START_DATE = TODAY - timedelta(days=60)  # EXTENDED from 30 to 60 days for more articles
 
-# --- SOURCES (For the Fresh Data) ---
-RSS_FEEDS = [
-    {'url': 'https://www.politico.eu/feed/', 'source': 'Politico EU'},
-    {'url': 'https://www.euronews.com/rss?level=vertical&name=my-europe', 'source': 'Euronews'},
-    {'url': 'https://www.theguardian.com/world/europe/rss', 'source': 'The Guardian'},
-    {'url': 'https://www.france24.com/en/europe/rss', 'source': 'France24'},
-    {'url': 'https://rss.dw.com/xml/rss-en-eu', 'source': 'Deutsche Welle'},
+# --- EU NEWS SOURCES (Hybrid: RSS + Direct Scraping) ---
+EU_SOURCES = [
+    {
+        'name': 'European Commission',
+        'type': 'rss',
+        'rss_url': 'https://ec.europa.eu/commission/presscorner/api/rss?language=en',
+        'base_url': 'https://ec.europa.eu'
+    },
+    {
+        'name': 'European Parliament',
+        'type': 'rss',
+        'rss_url': 'https://www.europarl.europa.eu/rss/doc/press-releases/en.xml',
+        'base_url': 'https://www.europarl.europa.eu'
+    },
+    {
+        'name': 'EU Council',
+        'type': 'direct',
+        'news_url': 'https://www.consilium.europa.eu/en/press/press-releases/',
+        'base_url': 'https://www.consilium.europa.eu',
+        'article_selector': '.list-item, .press-release',
+        'title_selector': 'h2, .title a',
+        'content_selector': '.summary, .description',
+        'date_selector': '.date, time',
+        'link_selector': 'a[href*="/press/"]'
+    },
+    {
+        'name': 'Euronews EU',
+        'type': 'rss',
+        'rss_url': 'https://www.euronews.com/rss?level=vertical&name=my-europe',
+        'base_url': 'https://www.euronews.com'
+    },
+    {
+        'name': 'Politico EU',
+        'type': 'rss',
+        'rss_url': 'https://www.politico.eu/feed/',
+        'base_url': 'https://www.politico.eu'
+    },
+    {
+        'name': 'EU Observer',
+        'type': 'rss',
+        'rss_url': 'https://euobserver.com/rss.xml',
+        'base_url': 'https://euobserver.com'
+    },
+    {
+        'name': 'DW EU News',
+        'type': 'rss',
+        'rss_url': 'https://rss.dw.com/xml/rss-en-eu',
+        'base_url': 'https://www.dw.com'
+    },
+    {
+        'name': 'Reuters EU',
+        'type': 'rss',
+        'rss_url': 'https://feeds.reuters.com/Reuters/worldNews',
+        'base_url': 'https://www.reuters.com'
+    }
 ]
 
-# --- 1. HISTORICAL BACKFILL ENGINE (The "Time Machine") ---
-def generate_historical_data(target_count):
-    """
-    Generates realistic news headlines for the past 30 days to fill the gap 
-    that RSS feeds cannot reach.
-    """
-    print(f"--- GENERATING HISTORY ({START_DATE.strftime('%d %b')} - {TODAY.strftime('%d %b')}) ---")
-    
+# --- 1. SCRAPE EU NEWS DIRECTLY FROM HTML ---
+def scrape_eu_news():
+    """Scrape real EU news directly from official EU websites using BeautifulSoup."""
     articles = []
-    current_day = START_DATE
-    
-    # Templates to create realistic variance
-    topics = [
-        ("Economy", "Inflation rate {action} to {num}% in {country}."),
-        ("Energy", "{country} announces new {energy} infrastructure project worth €{num}B."),
-        ("Politics", "Protests erupt in {city} over new {policy} reforms."),
-        ("Tech", "EU opens antitrust investigation into {tech_co} over AI safety."),
-        ("Defense", "NATO conducts naval exercises in the {sea} Sea."),
-        ("Trade", "Trade talks between EU and {partner} stall over agricultural tariffs."),
-        ("Health", "New health guidelines issued for {virus} variant in Western Europe.")
-    ]
-    
-    countries = ["Germany", "France", "Italy", "Spain", "Poland", "Netherlands"]
-    cities = ["Berlin", "Paris", "Rome", "Madrid", "Warsaw", "Amsterdam"]
-    partners = ["Mercosur", "India", "USA", "China"]
-    tech_cos = ["Big Tech", "AI Startup", "Social Media Giant"]
-    energies = ["Hydrogen", "Solar", "Offshore Wind", "Nuclear"]
-    actions = ["rises", "falls", "stabilizes"]
-    seas = ["Baltic", "Mediterranean", "North"]
-    
-    # Generate daily news until we catch up to "Today"
-    while current_day < TODAY:
-        day_str = current_day.strftime("%a, %d %B %Y")
-        
-        # Create 10-15 articles per day
-        daily_vol = random.randint(10, 15)
-        
-        for _ in range(daily_vol):
-            topic, template = random.choice(topics)
-            
-            # Fill template
-            title = template.format(
-                action=random.choice(actions),
-                num=random.randint(2, 50),
-                country=random.choice(countries),
-                city=random.choice(cities),
-                energy=random.choice(energies),
-                policy="labor",
-                tech_co=random.choice(tech_cos),
-                partner=random.choice(partners),
-                sea=random.choice(seas),
-                virus="respiratory"
-            )
-            
-            articles.append({
-                "title": f"[{topic}] {title}",
-                "date": day_str,
-                "source": "EU Archive (Backfill)",
-                "link": f"https://archive.eu/{current_day.strftime('%Y%m%d')}/{random.randint(1000,9999)}",
-                "content": f"ARCHIVE ENTRY ({day_str}): {title} Analysts suggest this will have significant impact on the upcoming quarter. Member states are expected to vote on related measures next week."
-            })
-            
-        current_day += timedelta(days=1)
-        
-    return articles
+    print("--- SCRAPING REAL EU NEWS FROM OFFICIAL SOURCES ---")
 
-# --- 2. FRESH NEWS SCRAPER (RSS) ---
-def fetch_fresh_news():
-    """Gets the REAL news from the last 48-72 hours."""
-    articles = []
-    print("\n--- FETCHING FRESH NEWS (RSS) ---")
-    
-    for feed_info in RSS_FEEDS:
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    }
+
+    for source in EU_SOURCES:
         try:
-            feed = feedparser.parse(feed_info['url'])
-            # Only grab last 3 days real news
-            cutoff = time.time() - (3 * 24 * 60 * 60)
-            
-            for entry in feed.entries:
-                # Date Check
-                dt = entry.get('published_parsed') or entry.get('updated_parsed')
-                if dt and time.mktime(dt) > cutoff:
-                    # Format Date "Friday, 16 January 2026"
-                    clean_date = datetime.fromtimestamp(time.mktime(dt)).strftime("%A, %d %B %Y")
-                    
-                    articles.append({
-                        "title": entry.get('title'),
-                        "date": clean_date,
-                        "source": feed_info['source'],
-                        "link": entry.get('link'),
-                        "content": entry.get('summary', '')[:1000]
-                    })
-        except:
+            print(f"Scraping {source['name']}...")
+
+            if source['type'] == 'rss':
+                # Use RSS feed for initial data, then scrape full content
+                feed = feedparser.parse(source['rss_url'])
+                cutoff = time.time() - (60 * 24 * 60 * 60)  # 60 days ago - EXTENDED
+
+                for entry in feed.entries[:50]:  # Limit entries per feed - INCREASED from 25
+                    # Date check
+                    dt = entry.get('published_parsed') or entry.get('updated_parsed')
+                    if dt and time.mktime(dt) > cutoff:
+                        clean_date = datetime.fromtimestamp(time.mktime(dt)).strftime("%A, %d %B %Y")
+
+                        # Get initial content from RSS
+                        content = entry.get('content', [{}])[0].get('value', '') if entry.get('content') else entry.get('summary', '')
+
+                        # Scrape full article content
+                        try:
+                            article_url = entry.get('link')
+                            if article_url:
+                                article_response = requests.get(article_url, headers=headers, timeout=10)
+                                article_soup = BeautifulSoup(article_response.content, 'html.parser')
+
+                                # Try multiple selectors to get full content
+                                content_selectors = [
+                                    '.article-content p', '.content p', 'article p',
+                                    '.main-content p', '.story-body p', '.post-content p'
+                                ]
+
+                                for selector in content_selectors:
+                                    content_elems = article_soup.select(selector)
+                                    if content_elems:
+                                        full_content = ' '.join([elem.get_text().strip() for elem in content_elems[:25]])
+                                        if len(full_content) > len(content):
+                                            content = full_content
+                                        break
+                        except:
+                            pass  # Keep RSS content if scraping fails
+
+                        # Clean content
+                        content = re.sub(r'\s+', ' ', content).strip()
+
+                        if len(content) > 200:  # Substantial content
+                            articles.append({
+                                "title": entry.get('title', ''),
+                                "date": clean_date,
+                                "source": source['name'],
+                                "link": entry.get('link', ''),
+                                "content": content[:5000]  # Full content for in-depth answers
+                            })
+
+            elif source['type'] == 'direct':
+                # Direct HTML scraping for sources without RSS
+                response = requests.get(source['news_url'], headers=headers, timeout=10)
+                response.raise_for_status()
+
+                soup = BeautifulSoup(response.content, 'html.parser')
+                article_links = soup.select(source['link_selector'])
+
+                for link in article_links[:15]:  # Limit articles
+                    article_url = link.get('href')
+                    if not article_url.startswith('http'):
+                        article_url = source['base_url'] + article_url
+
+                    try:
+                        article_response = requests.get(article_url, headers=headers, timeout=10)
+                        article_soup = BeautifulSoup(article_response.content, 'html.parser')
+
+                        # Extract title
+                        title_elem = article_soup.select_one(source['title_selector'])
+                        title = title_elem.get_text().strip() if title_elem else link.get_text().strip()
+
+                        # Extract date
+                        date_elem = article_soup.select_one(source['date_selector'])
+                        if date_elem:
+                            date_text = date_elem.get_text().strip()
+                            try:
+                                dt = datetime.strptime(date_text, '%d %B %Y')
+                            except:
+                                dt = TODAY
+                        else:
+                            dt = TODAY
+
+                        if dt >= START_DATE:
+                            # Extract full content
+                            content_elems = article_soup.select(source['content_selector'])
+                            content = ' '.join([elem.get_text().strip() for elem in content_elems])
+
+                            if len(content) < 500:
+                                # Try additional selectors
+                                body_selectors = ['article p', '.content-body p', '.main-content p']
+                                for selector in body_selectors:
+                                    body_elems = article_soup.select(selector)
+                                    if body_elems:
+                                        content = ' '.join([elem.get_text().strip() for elem in body_elems[:25]])
+                                        break
+
+                            content = re.sub(r'\s+', ' ', content).strip()
+
+                            if len(content) > 200:
+                                articles.append({
+                                    "title": title,
+                                    "date": dt.strftime("%A, %d %B %Y"),
+                                    "source": source['name'],
+                                    "link": article_url,
+                                    "content": content[:5000]
+                                })
+
+                    except:
+                        continue
+
+                    time.sleep(1)  # Be respectful
+
+        except Exception as e:
+            print(f"Error scraping {source['name']}: {e}")
             continue
-            
-    print(f"-> Fetched {len(articles)} fresh articles.")
-    return articles
+
+    # Remove duplicates and filter for substantial content
+    seen_titles = set()
+    unique_articles = []
+    for article in articles:
+        if (article['title'] not in seen_titles and 
+            len(article['content']) > 300 and 
+            len(article['title']) > 15):
+            seen_titles.add(article['title'])
+            unique_articles.append(article)
+
+    print(f"-> Scraped {len(unique_articles)} unique EU news articles with full content.")
+    return unique_articles
 
 # --- MAIN ---
 def main():
-    # 1. Generate History (The Bulk)
-    historical_data = generate_historical_data(TARGET_TOTAL_ARTICLES)
-    
-    # 2. Scrape Fresh (The Tip)
-    fresh_data = fetch_fresh_news()
-    
-    # 3. Combine
-    full_dataset = fresh_data + historical_data
-    
-    # 4. Save
+    # 1. Scrape Real EU News from official sources
+    full_dataset = scrape_eu_news()
+
+    # 2. Save
     os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
     with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
         json.dump(full_dataset, f, indent=4)
-        
+
     print(f"\n[SUCCESS] Total Articles: {len(full_dataset)}")
     print(f"Date Range: {START_DATE.strftime('%d %b %Y')} to {TODAY.strftime('%d %b %Y')}")
     print(f"Saved to: {OUTPUT_FILE}")
