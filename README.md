@@ -53,6 +53,52 @@ A cutting-edge **Retrieval-Augmented Generation (RAG)** system for analyzing Eur
 
 ---
 
+## 🚀 Deployment
+
+### Streamlit Cloud (Recommended)
+
+1. **Go to [Streamlit Cloud](https://share.streamlit.io/)**
+2. **Connect your GitHub repository**
+3. **Deploy the app**:
+   - Main file path: `app.py`
+   - Python version: 3.9 or higher
+4. **Add secrets** in the Streamlit Cloud dashboard:
+   ```
+   GOOGLE_API_KEY = "your_google_gemini_api_key_here"
+   ```
+5. **Deploy!** Your EU News Analyst will be live instantly
+
+### Alternative Deployment Options
+
+#### Railway
+```bash
+# Install Railway CLI
+npm install -g @railway/cli
+
+# Login and deploy
+railway login
+railway init
+railway up
+```
+
+#### Heroku
+```bash
+# Create requirements.txt and Procfile
+echo "web: streamlit run app.py --server.port $PORT --server.headless true" > Procfile
+git push heroku main
+```
+
+#### Local Development
+```bash
+# Install dependencies
+pip install -r requirements.txt
+
+# Run locally
+streamlit run app.py
+```
+
+---
+
 ## Project Structure
 
 ```
