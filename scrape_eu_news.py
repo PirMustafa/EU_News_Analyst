@@ -1,7 +1,6 @@
 import json
 import os
 import requests
-import feedparser
 from datetime import datetime, timedelta
 from bs4 import BeautifulSoup, SoupStrainer
 import time
@@ -87,53 +86,93 @@ def scrape_eu_news():
             print(f"Scraping {source['name']}...")
 
             if source['type'] == 'rss':
-                # Use RSS feed for initial data, then scrape full content
-                feed = feedparser.parse(source['rss_url'])
+                # Use BeautifulSoup to parse RSS XML/HTML directly instead of feedparser
+                try:
+                    rss_response = requests.get(source['rss_url'], headers=headers, timeout=10)
+                    rss_soup = BeautifulSoup(rss_response.content, 'xml')
+                except:
+                    print(f"Failed to fetch RSS from {source['name']}")
+                    continue
+
                 cutoff = time.time() - (60 * 24 * 60 * 60)  # 60 days ago - EXTENDED
 
-                for entry in feed.entries[:50]:  # Limit entries per feed - INCREASED from 25
-                    # Date check
-                    dt = entry.get('published_parsed') or entry.get('updated_parsed')
-                    if dt and time.mktime(dt) > cutoff:
-                        clean_date = datetime.fromtimestamp(time.mktime(dt)).strftime("%A, %d %B %Y")
+                # Parse RSS items using BeautifulSoup
+                items = rss_soup.find_all('item')
+                if not items:
+                    # Try channel > item structure
+                    channel = rss_soup.find('channel')
+                    if channel:
+                        items = channel.find_all('item')
 
-                        # Get initial content from RSS
-                        content = entry.get('content', [{}])[0].get('value', '') if entry.get('content') else entry.get('summary', '')
+                for item in items[:50]:  # Limit entries per feed - INCREASED from 25
+                    try:
+                        # Extract title
+                        title_elem = item.find('title')
+                        title = title_elem.get_text().strip() if title_elem else 'No Title'
 
-                        # Scrape full article content
-                        try:
-                            article_url = entry.get('link')
-                            if article_url:
-                                article_response = requests.get(article_url, headers=headers, timeout=10)
-                                article_soup = BeautifulSoup(article_response.content, 'html.parser')
+                        # Extract link
+                        link_elem = item.find('link')
+                        article_url = link_elem.get_text().strip() if link_elem else None
 
-                                # Try multiple selectors to get full content
-                                content_selectors = [
-                                    '.article-content p', '.content p', 'article p',
-                                    '.main-content p', '.story-body p', '.post-content p'
-                                ]
-
-                                for selector in content_selectors:
-                                    content_elems = article_soup.select(selector)
-                                    if content_elems:
-                                        full_content = ' '.join([elem.get_text().strip() for elem in content_elems[:25]])
-                                        if len(full_content) > len(content):
-                                            content = full_content
+                        # Extract publication date
+                        pub_date_elem = item.find('pubDate') or item.find('published')
+                        dt = None
+                        if pub_date_elem:
+                            date_text = pub_date_elem.get_text().strip()
+                            try:
+                                # Try different date formats
+                                for fmt in ['%a, %d %b %Y %H:%M:%S %Z', '%Y-%m-%dT%H:%M:%S%z', '%Y-%m-%d %H:%M:%S']:
+                                    try:
+                                        dt = datetime.strptime(date_text, fmt)
                                         break
-                        except:
-                            pass  # Keep RSS content if scraping fails
+                                    except:
+                                        continue
+                            except:
+                                dt = TODAY
 
-                        # Clean content
-                        content = re.sub(r'\s+', ' ', content).strip()
+                        if dt and dt.timestamp() > cutoff:
+                            clean_date = dt.strftime("%A, %d %B %Y")
 
-                        if len(content) > 200:  # Substantial content
-                            articles.append({
-                                "title": entry.get('title', ''),
-                                "date": clean_date,
-                                "source": source['name'],
-                                "link": entry.get('link', ''),
-                                "content": content[:5000]  # Full content for in-depth answers
-                            })
+                            # Get initial content from RSS
+                            description_elem = item.find('description')
+                            content = description_elem.get_text().strip() if description_elem else ''
+
+                            # Scrape full article content
+                            try:
+                                if article_url:
+                                    article_response = requests.get(article_url, headers=headers, timeout=10)
+                                    article_soup = BeautifulSoup(article_response.content, 'html.parser')
+
+                                    # Try multiple selectors to get full content
+                                    content_selectors = [
+                                        '.article-content p', '.content p', 'article p',
+                                        '.main-content p', '.story-body p', '.post-content p'
+                                    ]
+
+                                    for selector in content_selectors:
+                                        content_elems = article_soup.select(selector)
+                                        if content_elems:
+                                            full_content = ' '.join([elem.get_text().strip() for elem in content_elems[:25]])
+                                            if len(full_content) > len(content):
+                                                content = full_content
+                                            break
+                            except:
+                                pass  # Keep RSS content if scraping fails
+
+                            # Clean content
+                            content = re.sub(r'\s+', ' ', content).strip()
+
+                            if len(content) > 200:  # Substantial content
+                                articles.append({
+                                    "title": title,
+                                    "date": clean_date,
+                                    "source": source['name'],
+                                    "link": article_url or '',
+                                    "content": content[:5000]  # Full content for in-depth answers
+                                })
+                    except Exception as e:
+                        print(f"Error parsing RSS item: {e}")
+                        continue
 
             elif source['type'] == 'direct':
                 # Direct HTML scraping for sources without RSS
