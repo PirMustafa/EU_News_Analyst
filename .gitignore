@@ -1,0 +1,21 @@
+# Virtual environment
+gpu_env/
+venv/
+.env
+
+# Secrets — NEVER commit API keys
+.streamlit/secrets.toml
+
+# Large binary/data files (regeneratable)
+*.faiss
+*.pkl
+__pycache__/
+*.pyc
+*.pyo
+
+# Scraped data (optional — uncomment to exclude)
+# eu_news_data.json
+
+# OS
+.DS_Store
+Thumbs.db

@@ -2,6 +2,7 @@
 Build FAISS Index from EU News Data
 ====================================
 Generates embeddings for all articles and creates a FAISS index for semantic search.
+Uses sentence-transformers (local, no API key needed) for embeddings.
 """
 
 import os
@@ -9,22 +10,25 @@ import json
 import pickle
 import numpy as np
 import faiss
-import google.generativeai as genai
+from sentence_transformers import SentenceTransformer
 from tqdm import tqdm
 
 # Configuration
-API_KEY = "AIzaSyARdSFJJChAWGAv38mICrYohancGw0YIG8"
 DATA_FILE = "eu_news_data.json"
 INDEX_FILE = "news_index.faiss"
 EMBEDDINGS_FILE = "items_with_embeddings.pkl"
 METADATA_FILE = "items_metadata.pkl"
-EMBEDDING_DIM = 768
+EMBEDDING_MODEL = "all-MiniLM-L6-v2"
+EMBEDDING_DIM = 384
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 200
 
-# Configure API
-os.environ["GOOGLE_API_KEY"] = API_KEY
-genai.configure(api_key=API_KEY)
+# Force CPU to avoid GPU compatibility issues
+os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+
+# Load embedding model once
+print("Loading embedding model...")
+embed_model = SentenceTransformer(EMBEDDING_MODEL, device="cpu")
 
 def simple_text_splitter(text, chunk_size=CHUNK_SIZE, overlap=CHUNK_OVERLAP):
     """Split text into overlapping chunks."""
@@ -42,25 +46,13 @@ def simple_text_splitter(text, chunk_size=CHUNK_SIZE, overlap=CHUNK_OVERLAP):
             break
     return chunks
 
-def generate_embedding(text, retries=3):
-    """Generate embedding for text using Google's API."""
-    for attempt in range(retries):
-        try:
-            result = genai.embed_content(
-                model="models/text-embedding-004",
-                content=text,
-                task_type="retrieval_document",
-                output_dimensionality=EMBEDDING_DIM
-            )
-            return result['embedding']
-        except Exception as e:
-            if attempt < retries - 1:
-                import time
-                time.sleep(1)
-            else:
-                print(f"Failed to embed text: {e}")
-                return None
-    return None
+def generate_embedding(text):
+    """Generate embedding for text using local sentence-transformers model."""
+    try:
+        return embed_model.encode(text).tolist()
+    except Exception as e:
+        print(f"Failed to embed text: {e}")
+        return None
 
 def main():
     print("=" * 60)
@@ -97,23 +89,22 @@ def main():
     
     print(f"   Created {len(items)} text chunks")
     
-    # Generate embeddings
-    print(f"\n🧠 Generating embeddings (this may take a few minutes)...")
+    # Generate embeddings in batches for speed
+    print(f"\n🧠 Generating embeddings (local model, no API needed)...")
+    texts = [item['text'] for item in items]
+    batch_size = 64
+    all_embeddings_list = []
+
+    with tqdm(total=len(texts), desc="Embeddings") as pbar:
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i:i + batch_size]
+            embeddings = embed_model.encode(batch, show_progress_bar=False)
+            all_embeddings_list.extend(embeddings.tolist())
+            pbar.update(len(batch))
+
+    for item, emb in zip(items, all_embeddings_list):
+        item['embedding'] = emb
     failed_count = 0
-    
-    with tqdm(total=len(items), desc="Embeddings") as pbar:
-        for item in items:
-            embedding = generate_embedding(item['text'])
-            if embedding:
-                item['embedding'] = embedding
-            else:
-                failed_count += 1
-                # Use zero vector as fallback
-                item['embedding'] = [0.0] * EMBEDDING_DIM
-            pbar.update(1)
-    
-    if failed_count > 0:
-        print(f"   ⚠️ {failed_count} embeddings failed")
     
     # Build FAISS index
     print(f"\n🔍 Building FAISS index...")

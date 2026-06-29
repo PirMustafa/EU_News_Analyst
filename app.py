@@ -184,35 +184,33 @@ st.markdown("""
 @st.cache_resource
 def load_dependencies():
     """Load heavy dependencies once."""
-    import google.generativeai as genai
+    import os
+    os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+    from sentence_transformers import SentenceTransformer
     import faiss
     import pickle
-    return genai, faiss, pickle
+    embed_model = SentenceTransformer("all-MiniLM-L6-v2", device="cpu")
+    return embed_model, faiss, pickle
 
 # --- API SETUP ---
-# Try multiple sources for API key: secrets, env var, or fallback
-api_key = None
+# Read Groq API key from secrets or environment
+groq_api_key = None
 
 # 1. Try Streamlit secrets first
 try:
-    api_key = st.secrets.get("GOOGLE_API_KEY")
+    groq_api_key = st.secrets.get("GROQ_API_KEY")
 except:
     pass
 
 # 2. Try environment variable
-if not api_key:
-    api_key = os.getenv('GOOGLE_API_KEY')
+if not groq_api_key:
+    groq_api_key = os.getenv('GROQ_API_KEY')
 
-# 3. Fallback to hardcoded key (for development)
-if not api_key:
-    api_key = "AIzaSyARdSFJJChAWGAv38mICrYohancGw0YIG8"
-
-if not api_key:
-    st.error("CRITICAL: No API key found. Please set GOOGLE_API_KEY in secrets or environment.")
+if not groq_api_key:
+    st.error("CRITICAL: No GROQ_API_KEY found. Please set it in .streamlit/secrets.toml")
     st.stop()
 
-genai, faiss, pickle = load_dependencies()
-genai.configure(api_key=api_key)
+embed_model, faiss, pickle = load_dependencies()
 
 # --- DATA LOADING ---
 @st.cache_resource
@@ -243,19 +241,31 @@ def load_data():
 
 # --- EMBEDDING FUNCTION ---
 def get_embedding(text):
-    """Generate embedding for text."""
+    """Generate embedding for text using local sentence-transformers model."""
     try:
-        result = genai.embed_content(
-            model="models/text-embedding-004",
-            content=text,
-            task_type="retrieval_query"
-        )
-        return result['embedding']
+        return embed_model.encode(text).tolist()
     except Exception as e:
         st.error(f"Embedding error: {e}")
         return None
 
-# --- VOICE FUNCTIONS ---
+def groq_generate(prompt, model="llama-3.3-70b-versatile"):
+    """Call Groq API for text generation."""
+    import requests
+    headers = {
+        "Authorization": "Bearer " + groq_api_key,
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 2048,
+        "temperature": 0.7
+    }
+    r = requests.post("https://api.groq.com/openai/v1/chat/completions",
+                      headers=headers, json=payload, timeout=60)
+    r.raise_for_status()
+    return r.json()["choices"][0]["message"]["content"]
+
 async def text_to_speech(text, voice="en-GB-SoniaNeural"):
     """Convert text to speech using Edge TTS."""
     try:
@@ -409,32 +419,20 @@ Ask me about any specific story for detailed analysis. For example:
 Keep it brief and scannable. No deep analysis yet - save that for when they ask."""
 
         try:
-            model = genai.GenerativeModel("gemini-2.0-flash")
-            response = model.generate_content(overview_prompt)
-            
+            analysis = groq_generate(overview_prompt)
             return {
-                "analysis": response.text,
+                "analysis": analysis,
                 "thoughts": "",
                 "sources": sources,
                 "query_type": "overview"
             }
         except Exception as e:
-            try:
-                model = genai.GenerativeModel("gemini-2.5-flash")
-                response = model.generate_content(overview_prompt)
-                return {
-                    "analysis": response.text,
-                    "thoughts": "",
-                    "sources": sources,
-                    "query_type": "overview"
-                }
-            except Exception as e2:
-                return {
-                    "analysis": f"Error generating overview: {str(e2)}",
-                    "thoughts": "",
-                    "sources": sources,
-                    "query_type": "overview"
-                }
+            return {
+                "analysis": f"Error generating overview: {str(e)}",
+                "thoughts": "",
+                "sources": sources,
+                "query_type": "overview"
+            }
     
     else:
         # --- DETAILED MODE: Deep dive on specific topic ---
@@ -519,34 +517,21 @@ If the articles don't contain enough information, say so."""
 In 2-3 sentences, what's the key insight an analyst should note?"""
 
         try:
-            model = genai.GenerativeModel("gemini-2.0-flash")
-            analysis_response = model.generate_content(detailed_prompt)
-            thoughts_response = model.generate_content(thoughts_prompt)
-            
+            analysis = groq_generate(detailed_prompt)
+            thoughts = groq_generate(thoughts_prompt)
             return {
-                "analysis": analysis_response.text,
-                "thoughts": thoughts_response.text,
+                "analysis": analysis,
+                "thoughts": thoughts,
                 "sources": sources[:5],
                 "query_type": "detailed"
             }
         except Exception as e:
-            try:
-                model = genai.GenerativeModel("gemini-2.5-flash")
-                analysis_response = model.generate_content(detailed_prompt)
-                thoughts_response = model.generate_content(thoughts_prompt)
-                return {
-                    "analysis": analysis_response.text,
-                    "thoughts": thoughts_response.text,
-                    "sources": sources[:5],
-                    "query_type": "detailed"
-                }
-            except Exception as e2:
-                return {
-                    "analysis": f"Analysis generation failed: {str(e2)}",
-                    "thoughts": "",
-                    "sources": sources[:5],
-                    "query_type": "detailed"
-                }
+            return {
+                "analysis": f"Analysis generation failed: {str(e)}",
+                "thoughts": "",
+                "sources": sources[:5],
+                "query_type": "detailed"
+            }
 
 # --- INITIALIZE SESSION STATE ---
 if "messages" not in st.session_state:

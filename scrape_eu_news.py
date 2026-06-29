@@ -25,8 +25,8 @@ BASE_URL = "https://commission.europa.eu"
 NEWS_PAGE = "https://commission.europa.eu/news-and-media/news_en"
 
 # Date cutoff - stop scraping when articles are older than this
-CUTOFF_DATE = datetime(2025, 1, 1)  # January 1st, 2025 - Get full year of articles
-MAX_PAGES = 200  # Increased limit for more articles
+CUTOFF_DATE = datetime(2026, 6, 1)  # June 1st, 2026 - Get this month's articles
+MAX_PAGES = 50  # Enough for one month
 
 # Headers to mimic a real browser
 HEADERS = {
