@@ -1,7 +1,12 @@
 # Virtual environment
 gpu_env/
 venv/
+.venv*/
 .env
+
+# Test artifacts
+.coverage
+.pytest_cache/
 
 # Secrets — NEVER commit API keys
 .streamlit/secrets.toml
