@@ -4,6 +4,9 @@ A professional news analysis system with voice interaction
 """
 
 import streamlit as st
+from streamlit.errors import StreamlitSecretNotFoundError
+import json
+import logging
 import os
 from datetime import datetime
 import tempfile
@@ -11,6 +14,25 @@ import asyncio
 import numpy as np
 
 import common
+
+logger = logging.getLogger(__name__)
+
+
+class GroqAPIError(Exception):
+    """Raised when the Groq API returns an unusable response."""
+
+    def __init__(self, message, status_code=None):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class EmbeddingError(Exception):
+    """Raised when semantic retrieval cannot generate an embedding."""
+
+
+class SpeechToTextError(Exception):
+    """Raised when speech recognition cannot transcribe audio."""
+
 
 # --- CONFIGURATION ---
 CURRENT_DATE = datetime.now()
@@ -197,8 +219,10 @@ groq_api_key = None
 # 1. Try Streamlit secrets first
 try:
     groq_api_key = st.secrets.get("GROQ_API_KEY")
-except:
-    pass
+except (FileNotFoundError, StreamlitSecretNotFoundError):
+    logger.debug("Streamlit secrets file was not found; trying environment variables.")
+except Exception:
+    logger.warning("Unable to read Streamlit secrets; trying environment variables.", exc_info=True)
 
 # 2. Try environment variable
 if not groq_api_key:
@@ -214,25 +238,72 @@ embed_model, faiss, pickle = load_dependencies()
 @st.cache_resource
 def load_data():
     """Load FAISS index and embeddings data."""
+    missing_index_status = f"Offline: {common.INDEX_FILE} is missing. Run build_index.py."
     try:
         index = faiss.read_index(common.INDEX_FILE)
+    except FileNotFoundError:
+        logger.warning("FAISS index is missing; the application is offline.")
+        return None, [], [], {}, missing_index_status
+    except Exception:
+        if not os.path.exists(common.INDEX_FILE):
+            logger.warning("FAISS index is missing; the application is offline.")
+            return None, [], [], {}, missing_index_status
+        logger.exception("FAISS index is corrupt or unreadable.")
+        return None, [], [], {}, f"Offline: {common.INDEX_FILE} is corrupt or unreadable."
+
+    try:
         with open(common.EMBEDDINGS_FILE, "rb") as f:
             items_with_embeddings = pickle.load(f)
-        
-        items = []
-        for item in items_with_embeddings:
-            items.append({
-                "text": item["text"],
-                "meta": item["metadata"]
-            })
-        
-        # Load raw news data
-        news_data = common.load_news_data()
-        
-        unique_articles = len(set(item["metadata"]["title"] for item in items_with_embeddings))
-        return index, items, news_data, {"articles": unique_articles, "chunks": len(items)}, "Online"
-    except Exception as e:
-        return None, [], [], {}, f"Error: {str(e)}"
+    except FileNotFoundError:
+        logger.warning("Embedding metadata file is missing; the application is offline.")
+        return None, [], [], {}, f"Offline: {common.EMBEDDINGS_FILE} is missing. Run build_index.py."
+    except Exception:
+        logger.exception("Embedding metadata file is corrupt or unreadable.")
+        return None, [], [], {}, f"Offline: {common.EMBEDDINGS_FILE} is corrupt or unreadable."
+
+    if not isinstance(items_with_embeddings, list):
+        logger.error("Embedding metadata file did not contain a list of items.")
+        return None, [], [], {}, f"Offline: {common.EMBEDDINGS_FILE} has an invalid structure. Run build_index.py."
+
+    items = []
+    for position, item in enumerate(items_with_embeddings):
+        try:
+            text = item["text"]
+            metadata = item["metadata"]
+            if (
+                not isinstance(text, str)
+                or not isinstance(metadata, dict)
+                or not isinstance(metadata.get("title"), str)
+            ):
+                raise ValueError("text must be a string and metadata must contain a title")
+        except (KeyError, TypeError, ValueError) as e:
+            logger.exception("Malformed indexed item at position %s.", position)
+            return (
+                None,
+                [],
+                [],
+                {},
+                f"Offline: indexed item {position} is malformed ({e}). Run build_index.py.",
+            )
+        items.append({"text": text, "meta": metadata})
+
+    news_data = []
+    if os.path.exists(common.DATA_FILE):
+        try:
+            with open(common.DATA_FILE, 'r', encoding='utf-8') as f:
+                news_data = json.load(f)
+        except json.JSONDecodeError as e:
+            logger.exception("News data JSON is malformed.")
+            return None, [], [], {}, f"Offline: {common.DATA_FILE} contains invalid JSON ({e})."
+        except (OSError, UnicodeError):
+            logger.exception("News data JSON is unreadable.")
+            return None, [], [], {}, f"Offline: {common.DATA_FILE} is unreadable."
+        if not isinstance(news_data, list):
+            logger.error("News data JSON did not contain a list of articles.")
+            return None, [], [], {}, f"Offline: {common.DATA_FILE} has an invalid structure."
+
+    unique_articles = len(set(item["meta"]["title"] for item in items))
+    return index, items, news_data, {"articles": unique_articles, "chunks": len(items)}, "Online"
 
 # --- EMBEDDING FUNCTION ---
 def get_embedding(text):
@@ -240,8 +311,24 @@ def get_embedding(text):
     try:
         return common.embed_text(embed_model, text)
     except Exception as e:
-        st.error(f"Embedding error: {e}")
-        return None
+        logger.exception("Failed to generate an embedding for the query.")
+        raise EmbeddingError(f"Semantic retrieval is unavailable: {e}") from e
+
+
+def _groq_error_message(response):
+    """Extract a useful, key-free error message from a Groq response."""
+    try:
+        body = response.json()
+        if isinstance(body, dict):
+            error = body.get("error")
+            if isinstance(error, dict) and error.get("message"):
+                return str(error["message"])
+            if body.get("message"):
+                return str(body["message"])
+    except ValueError:
+        pass
+    return response.text.strip() or "No error details were returned."
+
 
 def groq_generate(prompt, model="llama-3.3-70b-versatile"):
     """Call Groq API for text generation."""
@@ -258,8 +345,35 @@ def groq_generate(prompt, model="llama-3.3-70b-versatile"):
     }
     r = requests.post("https://api.groq.com/openai/v1/chat/completions",
                       headers=headers, json=payload, timeout=60)
-    r.raise_for_status()
-    return r.json()["choices"][0]["message"]["content"]
+    if r.status_code >= 400:
+        message = _groq_error_message(r)
+        raise GroqAPIError(
+            f"Groq API request failed with HTTP {r.status_code}: {message}",
+            status_code=r.status_code,
+        )
+
+    try:
+        response_body = r.json()
+    except ValueError as e:
+        raise GroqAPIError(
+            f"Groq API returned invalid JSON (HTTP {r.status_code}).",
+            status_code=r.status_code,
+        ) from e
+
+    try:
+        content = response_body["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as e:
+        raise GroqAPIError(
+            f"Groq API returned an unexpected response shape (HTTP {r.status_code}).",
+            status_code=r.status_code,
+        ) from e
+    if not isinstance(content, str):
+        raise GroqAPIError(
+            f"Groq API returned non-text content (HTTP {r.status_code}).",
+            status_code=r.status_code,
+        )
+    return content
+
 
 async def text_to_speech(text, voice="en-GB-SoniaNeural"):
     """Convert text to speech using Edge TTS."""
@@ -285,14 +399,21 @@ async def text_to_speech(text, voice="en-GB-SoniaNeural"):
                 audio_buffer.write(chunk["data"])
         audio_buffer.seek(0)
         return audio_buffer
-    except Exception as e:
-        return None
+    except Exception:
+        logger.exception("Text-to-speech generation failed.")
+        raise
+
 
 def speech_to_text(audio_bytes):
     """Convert speech to text."""
+    temp_path = None
     try:
         import speech_recognition as sr
-        
+    except Exception as e:
+        logger.exception("Speech recognition dependency could not be loaded.")
+        raise SpeechToTextError(f"Unexpected transcription error: {e}") from e
+
+    try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as f:
             f.write(audio_bytes)
             temp_path = f.name
@@ -301,11 +422,24 @@ def speech_to_text(audio_bytes):
         with sr.AudioFile(temp_path) as source:
             audio_data = recognizer.record(source)
             text = recognizer.recognize_google(audio_data)
-        
-        os.unlink(temp_path)
         return text
+    except sr.UnknownValueError as e:
+        logger.info("Speech recognition found no understandable speech.")
+        raise SpeechToTextError("No speech was recognized. Please try speaking again.") from e
+    except sr.RequestError as e:
+        logger.warning("Speech recognition service request failed: %s", e)
+        raise SpeechToTextError(
+            "Speech recognition is unavailable right now. Check your network and try again."
+        ) from e
     except Exception as e:
-        return None
+        logger.exception("Unexpected speech-to-text failure.")
+        raise SpeechToTextError(f"Unexpected transcription error: {e}") from e
+    finally:
+        if temp_path:
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                logger.warning("Could not remove temporary audio file %s.", temp_path, exc_info=True)
 
 # --- QUERY TYPE DETECTION ---
 def detect_query_type(query, conversation_history):
@@ -422,8 +556,9 @@ Keep it brief and scannable. No deep analysis yet - save that for when they ask.
                 "query_type": "overview"
             }
         except Exception as e:
+            logger.exception("Overview analysis generation failed.")
             return {
-                "analysis": f"Error generating overview: {str(e)}",
+                "error": f"Error generating overview: {e}",
                 "thoughts": "",
                 "sources": sources,
                 "query_type": "overview"
@@ -433,14 +568,19 @@ Keep it brief and scannable. No deep analysis yet - save that for when they ask.
         # --- DETAILED MODE: Deep dive on specific topic ---
         
         # Search FAISS for relevant content
-        query_emb = get_embedding(query)
         relevant_chunks = []
-        if query_emb and index:
-            query_array = np.array([query_emb], dtype=np.float32)
-            distances, indices = index.search(query_array, 10)
-            for idx in indices[0]:
-                if idx < len(items):
-                    relevant_chunks.append(items[idx])
+        retrieval_warning = None
+        try:
+            query_emb = get_embedding(query)
+            if query_emb and index is not None:
+                query_array = np.array([query_emb], dtype=np.float32)
+                distances, indices = index.search(query_array, 10)
+                for idx in indices[0]:
+                    if 0 <= idx < len(items):
+                        relevant_chunks.append(items[idx])
+        except EmbeddingError as e:
+            retrieval_warning = str(e)
+            logger.exception("Continuing detailed analysis without semantic retrieval.")
         
         # Find articles matching the query topic
         matching_articles = []
@@ -514,15 +654,19 @@ In 2-3 sentences, what's the key insight an analyst should note?"""
         try:
             analysis = groq_generate(detailed_prompt)
             thoughts = groq_generate(thoughts_prompt)
-            return {
+            result = {
                 "analysis": analysis,
                 "thoughts": thoughts,
                 "sources": sources[:5],
                 "query_type": "detailed"
             }
+            if retrieval_warning:
+                result["warning"] = retrieval_warning
+            return result
         except Exception as e:
+            logger.exception("Detailed analysis generation failed.")
             return {
-                "analysis": f"Analysis generation failed: {str(e)}",
+                "error": f"Analysis generation failed: {e}",
                 "thoughts": "",
                 "sources": sources[:5],
                 "query_type": "detailed"
@@ -605,10 +749,16 @@ with st.sidebar:
     
     if audio_value:
         with st.spinner("Transcribing..."):
-            transcribed = speech_to_text(audio_value.getvalue())
-            if transcribed:
-                st.session_state.transcribed_text = transcribed
-                st.success(f"Heard: {transcribed}")
+            try:
+                transcribed = speech_to_text(audio_value.getvalue())
+            except SpeechToTextError as e:
+                st.warning(str(e))
+            else:
+                if transcribed:
+                    st.session_state.transcribed_text = transcribed
+                    st.success(f"Heard: {transcribed}")
+                else:
+                    st.warning("No speech was recognized. Please try speaking again.")
     
     # Show transcribed text and submit button
     if st.session_state.get('transcribed_text'):
@@ -627,12 +777,18 @@ with st.sidebar:
         audio_file = st.file_uploader("Upload audio", type=['wav', 'mp3', 'm4a'], key="audio_upload", label_visibility="collapsed")
         if audio_file:
             with st.spinner("Transcribing..."):
-                transcribed = speech_to_text(audio_file.getvalue())
-                if transcribed:
-                    st.success(f"Transcribed: {transcribed}")
-                    if st.button("Use this query", key="use_file_query"):
-                        st.session_state.voice_query = transcribed
-                        st.rerun()
+                try:
+                    transcribed = speech_to_text(audio_file.getvalue())
+                except SpeechToTextError as e:
+                    st.warning(str(e))
+                else:
+                    if transcribed:
+                        st.success(f"Transcribed: {transcribed}")
+                        if st.button("Use this query", key="use_file_query"):
+                            st.session_state.voice_query = transcribed
+                            st.rerun()
+                    else:
+                        st.warning("No speech was recognized. Please try another audio file.")
     
     st.markdown("---")
     
@@ -659,7 +815,12 @@ for msg in st.session_state.messages:
             st.write(msg['content'])
     else:
         with st.chat_message("assistant"):
-            st.markdown(msg['content'])
+            if msg.get('error'):
+                st.error(msg['error'])
+            else:
+                if msg.get('warning'):
+                    st.warning(msg['warning'])
+                st.markdown(msg['content'])
             
             # Display analyst thoughts if available
             if msg.get('thoughts'):
@@ -698,21 +859,30 @@ else:
         main_audio = st.audio_input("Voice", key="main_mic", label_visibility="collapsed")
         if main_audio and not st.session_state.get('main_audio_processed'):
             with st.spinner("Listening..."):
-                transcribed = speech_to_text(main_audio.getvalue())
-                if transcribed:
-                    st.session_state.voice_query = transcribed
-                    st.session_state.main_audio_processed = True
-                    st.rerun()
+                try:
+                    transcribed = speech_to_text(main_audio.getvalue())
+                except SpeechToTextError as e:
+                    st.warning(str(e))
+                else:
+                    if transcribed:
+                        st.session_state.voice_query = transcribed
+                        st.session_state.main_audio_processed = True
+                        st.rerun()
+                    else:
+                        st.warning("No speech was recognized. Please try speaking again.")
         else:
             st.session_state.main_audio_processed = False
 
 # --- PROCESS QUERY ---
+if user_input and index is None:
+    st.error(f"System is offline and cannot process your question. {status}")
+
 if user_input and index is not None:
     # Add user message
     st.session_state.messages.append({"role": "user", "content": user_input})
     
     # Show processing status
-    with st.status("Processing your query...", expanded=True) as status:
+    with st.status("Processing your query...", expanded=True) as processing_status:
         st.write("Analyzing your question...")
         
         # Generate analysis with conversation history for context
@@ -730,30 +900,53 @@ if user_input and index is not None:
             st.write("Generating headlines briefing...")
         else:
             st.write("Generating detailed analysis...")
+
+        if result.get("error"):
+            st.error(result["error"])
+            processing_status.update(label="Query failed", state="error", expanded=False)
+        else:
+            if result.get("warning"):
+                st.warning(result["warning"])
         
-        # Generate voice if enabled
-        audio_data = None
-        if st.session_state.voice_enabled:
-            st.write("Generating voice response...")
-            try:
-                selected_voice = st.session_state.get('selected_voice', 'en-GB-SoniaNeural')
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                audio_data = loop.run_until_complete(text_to_speech(result['analysis'], selected_voice))
-                loop.close()
-            except Exception as e:
-                st.write(f"Voice generation skipped: {e}")
+            # Generate voice if enabled
+            audio_data = None
+            if st.session_state.voice_enabled:
+                st.write("Generating voice response...")
+                loop = None
+                try:
+                    selected_voice = st.session_state.get('selected_voice', 'en-GB-SoniaNeural')
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    audio_data = loop.run_until_complete(
+                        text_to_speech(result['analysis'], selected_voice)
+                    )
+                except Exception as e:
+                    tts_warning = f"Voice generation skipped: {e}"
+                    result["warning"] = (
+                        f"{result['warning']}; {tts_warning}"
+                        if result.get("warning")
+                        else tts_warning
+                    )
+                finally:
+                    if loop is not None:
+                        loop.close()
         
-        status.update(label="Complete", state="complete", expanded=False)
-    
-    # Add assistant message
-    st.session_state.messages.append({
-        "role": "assistant",
-        "content": result['analysis'],
-        "thoughts": result['thoughts'],
-        "sources": result['sources'],
-        "audio": audio_data
-    })
+            processing_status.update(label="Complete", state="complete", expanded=False)
+
+    if result.get("error"):
+        st.session_state.messages.append({
+            "role": "assistant",
+            "error": result["error"]
+        })
+    else:
+        st.session_state.messages.append({
+            "role": "assistant",
+            "content": result['analysis'],
+            "thoughts": result['thoughts'],
+            "sources": result['sources'],
+            "audio": audio_data,
+            "warning": result.get("warning")
+        })
     
     st.rerun()
 

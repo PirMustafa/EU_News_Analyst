@@ -3,7 +3,6 @@ Shared configuration and utilities for the EU News Analyst pipeline.
 Used by scrape_eu_news.py, build_index.py, and app.py.
 """
 
-import json
 import os
 
 # --- FILE PATHS ---
@@ -32,14 +31,6 @@ def load_embedding_model():
 def embed_text(model, text):
     """Generate an embedding vector (as a list) for a single text."""
     return model.encode(text).tolist()
-
-
-def load_news_data(path=DATA_FILE):
-    """Load scraped news articles from JSON. Returns [] if the file is missing."""
-    if not os.path.exists(path):
-        return []
-    with open(path, 'r', encoding='utf-8') as f:
-        return json.load(f)
 
 
 def dedupe_by(items, key):

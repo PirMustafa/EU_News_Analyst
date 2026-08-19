@@ -22,8 +22,9 @@ A production-grade **Retrieval-Augmented Generation (RAG)** platform that scrape
 8. [How the RAG Pipeline Works](#how-the-rag-pipeline-works)
 9. [Query Modes](#query-modes)
 10. [Voice Assistant](#voice-assistant)
-11. [Troubleshooting](#troubleshooting)
-12. [Changelog](#changelog)
+11. [Tests](#tests)
+12. [Troubleshooting](#troubleshooting)
+13. [Changelog](#changelog)
 
 ---
 
@@ -98,6 +99,8 @@ EU_News_Analyst/
 ├── scrape_eu_news.py           # EU Commission paginated scraper
 ├── eu_news_data.json           # Scraped articles (JSON)
 ├── requirements.txt            # Python dependencies
+├── requirements-dev.txt        # Test-only dependencies
+├── tests/                      # Pytest unit tests
 ├── .gitignore                  # Excludes secrets, env, binaries
 ├── .streamlit/
 │   ├── secrets.toml            # API keys — NOT in git
@@ -268,6 +271,22 @@ The app auto-detects which mode to use based on the query:
 1. Enable "Voice Responses" toggle in the sidebar
 2. Select a voice (British/US, Male/Female)
 3. Responses are read aloud via Microsoft Edge TTS after each answer
+
+---
+
+## Tests
+
+The unit tests cover the scraper, the chunking/index pipeline, and the RAG logic in `app.py`.
+Heavy dependencies (streamlit, sentence-transformers, faiss, edge-tts, SpeechRecognition) are
+stubbed, so no API key, model download, or network access is needed.
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+
+# with a coverage report
+pytest --cov=app --cov=build_index --cov=scrape_eu_news --cov-report=term-missing
+```
 
 ---
 

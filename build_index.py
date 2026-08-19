@@ -5,7 +5,10 @@ Generates embeddings for all articles and creates a FAISS index for semantic sea
 Uses sentence-transformers (local, no API key needed) for embeddings.
 """
 
+import json
 import pickle
+import sys
+import logging
 import numpy as np
 import faiss
 from tqdm import tqdm
@@ -16,9 +19,11 @@ from common import (
     EMBEDDINGS_FILE,
     METADATA_FILE,
     EMBEDDING_DIM,
+    embed_text,
     load_embedding_model,
-    load_news_data,
 )
+
+logger = logging.getLogger(__name__)
 
 # Configuration
 CHUNK_SIZE = 1000
@@ -44,6 +49,14 @@ def simple_text_splitter(text, chunk_size=CHUNK_SIZE, overlap=CHUNK_OVERLAP):
             break
     return chunks
 
+def generate_embedding(text):
+    """Generate embedding for text using local sentence-transformers model."""
+    try:
+        return embed_text(embed_model, text)
+    except Exception as e:
+        print(f"Failed to embed text: {e}")
+        return None
+
 def main():
     print("=" * 60)
     print("🔨 BUILDING FAISS INDEX")
@@ -51,13 +64,35 @@ def main():
     
     # Load news data
     print(f"\n📂 Loading data from {DATA_FILE}...")
-    news_data = load_news_data()
+    try:
+        with open(DATA_FILE, 'r', encoding='utf-8') as f:
+            news_data = json.load(f)
+    except FileNotFoundError:
+        print(f"❌ Data file not found: {DATA_FILE}. Run scrape_eu_news.py first.")
+        sys.exit(1)
+    except json.JSONDecodeError as e:
+        print(f"❌ Invalid JSON in {DATA_FILE}: {e}. Fix the file or run the scraper again.")
+        sys.exit(1)
+    except (OSError, UnicodeError) as e:
+        print(f"❌ Could not read {DATA_FILE}: {e}")
+        sys.exit(1)
     print(f"   Loaded {len(news_data)} articles")
     
     # Process articles into chunks
     print(f"\n📝 Processing articles into chunks...")
     items = []
-    for article in news_data:
+    skipped_articles = 0
+    for article_number, article in enumerate(news_data, start=1):
+        if (
+            not isinstance(article, dict)
+            or not all(field in article for field in ("date", "title", "content"))
+            or not all(isinstance(article[field], str) and article[field].strip()
+                       for field in ("date", "title", "content"))
+        ):
+            skipped_articles += 1
+            print(f"   ⚠️ Skipping malformed article {article_number}: expected date, title, and content.")
+            continue
+
         # Combine fields for embedding
         full_text = f"Date: {article['date']}\nTitle: {article['title']}\n\n{article['content']}"
         
@@ -77,6 +112,11 @@ def main():
             })
     
     print(f"   Created {len(items)} text chunks")
+    print(f"   Skipped malformed articles: {skipped_articles}")
+
+    if not items:
+        print("❌ No valid article chunks were created; index build aborted.")
+        sys.exit(1)
     
     # Generate embeddings in batches for speed
     print(f"\n🧠 Generating embeddings (local model, no API needed)...")
@@ -87,13 +127,18 @@ def main():
     with tqdm(total=len(texts), desc="Embeddings") as pbar:
         for i in range(0, len(texts), batch_size):
             batch = texts[i:i + batch_size]
-            embeddings = embed_model.encode(batch, show_progress_bar=False)
+            batch_end = i + len(batch) - 1
+            try:
+                embeddings = embed_model.encode(batch, show_progress_bar=False)
+            except Exception as e:
+                logger.exception("Embedding batch %s-%s failed.", i, batch_end)
+                print(f"❌ Embedding batch {i}-{batch_end} failed: {e}")
+                sys.exit(1)
             all_embeddings_list.extend(embeddings.tolist())
             pbar.update(len(batch))
 
     for item, emb in zip(items, all_embeddings_list):
         item['embedding'] = emb
-    failed_count = 0
     
     # Build FAISS index
     print(f"\n🔍 Building FAISS index...")
@@ -108,18 +153,33 @@ def main():
     print(f"\n💾 Saving files...")
     
     # Save FAISS index
-    faiss.write_index(index, INDEX_FILE)
+    try:
+        faiss.write_index(index, INDEX_FILE)
+    except Exception as e:
+        logger.exception("Failed to write %s.", INDEX_FILE)
+        print(f"❌ Failed to write {INDEX_FILE}: {e}")
+        sys.exit(1)
     print(f"   ✅ {INDEX_FILE}")
     
     # Save items with embeddings
-    with open(EMBEDDINGS_FILE, "wb") as f:
-        pickle.dump(items, f)
+    try:
+        with open(EMBEDDINGS_FILE, "wb") as f:
+            pickle.dump(items, f)
+    except Exception as e:
+        logger.exception("Failed to write %s.", EMBEDDINGS_FILE)
+        print(f"❌ Failed to write {EMBEDDINGS_FILE}: {e}")
+        sys.exit(1)
     print(f"   ✅ {EMBEDDINGS_FILE}")
     
     # Save metadata only (without embeddings, for lighter loading)
     items_metadata = [{k: v for k, v in item.items() if k != 'embedding'} for item in items]
-    with open(METADATA_FILE, "wb") as f:
-        pickle.dump(items_metadata, f)
+    try:
+        with open(METADATA_FILE, "wb") as f:
+            pickle.dump(items_metadata, f)
+    except Exception as e:
+        logger.exception("Failed to write %s.", METADATA_FILE)
+        print(f"❌ Failed to write {METADATA_FILE}: {e}")
+        sys.exit(1)
     print(f"   ✅ {METADATA_FILE}")
     
     print("\n" + "=" * 60)
