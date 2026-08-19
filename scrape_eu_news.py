@@ -12,15 +12,21 @@ How it works:
 """
 
 import json
+import logging
 import os
 import requests
 from datetime import datetime
 from bs4 import BeautifulSoup
 import time
 import re
+import tempfile
 
 # --- CONFIGURATION ---
-OUTPUT_FILE = r"D:\NLP_Projects\EU_News_Analyst\eu_news_data.json"
+logger = logging.getLogger(__name__)
+OUTPUT_FILE = os.path.abspath(os.environ.get(
+    "EU_NEWS_OUTPUT_FILE",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "eu_news_data.json"),
+))
 BASE_URL = "https://commission.europa.eu"
 NEWS_PAGE = "https://commission.europa.eu/news-and-media/news_en"
 
@@ -118,10 +124,12 @@ def scrape_article_content(article_url):
                 try:
                     date_only = date_str.split('T')[0]
                     article_date = datetime.fromisoformat(date_only)
-                except:
-                    pass
+                except ValueError:
+                    logger.warning("Could not parse ISO date %r for %s.", date_str, article_url)
             if not article_date:
                 article_date = parse_date(date_str)
+                if not article_date:
+                    logger.warning("Could not parse article date %r for %s.", date_str, article_url)
         
         # --- Extract content ---
         content = ''
@@ -149,8 +157,17 @@ def scrape_article_content(article_url):
             'content': content[:5000] if content else ''
         }
         
+    except requests.exceptions.Timeout as e:
+        logger.warning("Timed out scraping article URL %s: %s", article_url, e)
+        print(f"     ❌ Timeout scraping article: {e}")
+        return None
+    except requests.exceptions.RequestException as e:
+        logger.warning("Request failed for article URL %s: %s", article_url, e)
+        print(f"     ❌ Request failed: {e}")
+        return None
     except Exception as e:
-        print(f"     ❌ Error scraping article: {e}")
+        logger.exception("Failed to parse article URL %s.", article_url)
+        print(f"     ❌ Error parsing article: {e}")
         return None
 
 
@@ -165,7 +182,8 @@ def scrape_news_page(page_num):
     try:
         response = requests.get(page_url, headers=HEADERS, timeout=15)
         if response.status_code != 200:
-            print(f"   ❌ HTTP {response.status_code}")
+            logger.warning("News page URL %s returned HTTP %s.", page_url, response.status_code)
+            print(f"   ❌ HTTP {response.status_code} for {page_url}")
             return [], False
         
         soup = BeautifulSoup(response.content, 'html.parser')
@@ -214,8 +232,17 @@ def scrape_news_page(page_num):
         print(f"   📰 Found {len(unique_links)} article links")
         return unique_links, True
         
+    except requests.exceptions.Timeout as e:
+        logger.warning("Timed out scraping news page URL %s: %s", page_url, e)
+        print(f"   ❌ Timeout scraping page: {e}")
+        return [], False
+    except requests.exceptions.RequestException as e:
+        logger.warning("Request failed for news page URL %s: %s", page_url, e)
+        print(f"   ❌ Request failed: {e}")
+        return [], False
     except Exception as e:
-        print(f"   ❌ Error: {e}")
+        logger.exception("Failed to parse news page URL %s.", page_url)
+        print(f"   ❌ Error parsing page: {e}")
         return [], False
 
 
@@ -241,6 +268,9 @@ def main():
     all_articles = []
     scraped_urls = set()
     reached_cutoff = False
+    pagination_error = False
+    skipped_article_count = 0
+    missing_date_count = 0
     oldest_date_seen = datetime.now()
     
     # --- PAGINATION LOOP ---
@@ -249,7 +279,12 @@ def main():
         # Step 1: Get article links from this page
         article_links, success = scrape_news_page(page_num)
         
-        if not success or not article_links:
+        if not success:
+            pagination_error = True
+            print("\n⚠️  Pagination stopped due to an error; results may be incomplete.")
+            break
+
+        if not article_links:
             print(f"\n⚠️  No more articles found. Stopping pagination.")
             break
         
@@ -291,6 +326,8 @@ def main():
                     date_str = article_date.strftime("%A, %d %B %Y")
                 else:
                     # No date found - use today
+                    missing_date_count += 1
+                    logger.warning("No parseable date found for article URL %s; using today's date.", article_url)
                     date_str = datetime.now().strftime("%A, %d %B %Y")
                 
                 # Only add if content is substantial (>200 chars)
@@ -303,6 +340,12 @@ def main():
                         'content': article_data['content']
                     })
                     page_article_count += 1
+                else:
+                    skipped_article_count += 1
+                    print("     ⚠️  Skipping article with insufficient content.")
+            else:
+                skipped_article_count += 1
+                print("     ⚠️  Skipping article with missing title or content.")
         
         print(f"\n   ✅ Scraped {page_article_count} articles from page {page_num}")
         print(f"   📊 Total so far: {len(all_articles)} articles")
@@ -329,15 +372,42 @@ def main():
     print("📊 SCRAPING COMPLETE")
     print("=" * 60)
     print(f"Total Unique Articles: {len(unique_articles)}")
+    print(f"Skipped articles: {skipped_article_count}")
+    print(f"Articles dated today due to missing/unparseable dates: {missing_date_count}")
+    if pagination_error:
+        print("⚠️  Pagination stopped due to an error; saved results may be incomplete.")
     
     if unique_articles:
         # Show date range
         dates = [a['date'] for a in unique_articles]
         print(f"Date Range: {min(dates)} to {max(dates)}")
     
-    # Save to JSON
-    with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
-        json.dump(unique_articles, f, indent=2, ensure_ascii=False)
+    # Save to JSON atomically so a failed write cannot truncate existing data.
+    output_dir = os.path.dirname(OUTPUT_FILE) or os.curdir
+    try:
+        os.makedirs(output_dir, exist_ok=True)
+        temp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode='w',
+                encoding='utf-8',
+                dir=output_dir,
+                prefix='.eu_news_data-',
+                suffix='.tmp',
+                delete=False,
+            ) as temp_file:
+                temp_path = temp_file.name
+                json.dump(unique_articles, temp_file, indent=2, ensure_ascii=False)
+                temp_file.flush()
+                os.fsync(temp_file.fileno())
+            os.replace(temp_path, OUTPUT_FILE)
+        finally:
+            if temp_path and os.path.exists(temp_path):
+                os.unlink(temp_path)
+    except (OSError, TypeError, ValueError) as e:
+        logger.exception("Failed to save scraped data to %s.", OUTPUT_FILE)
+        print(f"❌ Failed to save scraped data to {OUTPUT_FILE}: {e}")
+        raise SystemExit(1) from e
     
     print(f"💾 Saved to: {OUTPUT_FILE}")
     print("=" * 60)
