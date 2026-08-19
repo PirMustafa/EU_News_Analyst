@@ -4,6 +4,7 @@ A professional news analysis system with voice interaction
 """
 
 import streamlit as st
+from streamlit.errors import StreamlitSecretNotFoundError
 import json
 import logging
 import os
@@ -219,7 +220,7 @@ groq_api_key = None
 # 1. Try Streamlit secrets first
 try:
     groq_api_key = st.secrets.get("GROQ_API_KEY")
-except FileNotFoundError:
+except (FileNotFoundError, StreamlitSecretNotFoundError):
     logger.debug("Streamlit secrets file was not found; trying environment variables.")
 except Exception:
     logger.warning("Unable to read Streamlit secrets; trying environment variables.", exc_info=True)
@@ -238,16 +239,16 @@ embed_model, faiss, pickle = load_dependencies()
 @st.cache_resource
 def load_data():
     """Load FAISS index and embeddings data."""
-    if not os.path.exists("news_index.faiss"):
-        logger.warning("FAISS index is missing; the application is offline.")
-        return None, [], [], {}, "Offline: news_index.faiss is missing. Run build_index.py."
-
+    missing_index_status = "Offline: news_index.faiss is missing. Run build_index.py."
     try:
         index = faiss.read_index("news_index.faiss")
     except FileNotFoundError:
         logger.warning("FAISS index is missing; the application is offline.")
-        return None, [], [], {}, "Offline: news_index.faiss is missing. Run build_index.py."
+        return None, [], [], {}, missing_index_status
     except Exception:
+        if not os.path.exists("news_index.faiss"):
+            logger.warning("FAISS index is missing; the application is offline.")
+            return None, [], [], {}, missing_index_status
         logger.exception("FAISS index is corrupt or unreadable.")
         return None, [], [], {}, "Offline: news_index.faiss is corrupt or unreadable."
 
@@ -414,7 +415,6 @@ def speech_to_text(audio_bytes):
         raise SpeechToTextError(f"Unexpected transcription error: {e}") from e
 
     try:
-        
         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as f:
             f.write(audio_bytes)
             temp_path = f.name
@@ -816,9 +816,12 @@ for msg in st.session_state.messages:
             st.write(msg['content'])
     else:
         with st.chat_message("assistant"):
-            if msg.get('warning'):
-                st.warning(msg['warning'])
-            st.markdown(msg['content'])
+            if msg.get('error'):
+                st.error(msg['error'])
+            else:
+                if msg.get('warning'):
+                    st.warning(msg['warning'])
+                st.markdown(msg['content'])
             
             # Display analyst thoughts if available
             if msg.get('thoughts'):
@@ -910,6 +913,7 @@ if user_input and index is not None:
             audio_data = None
             if st.session_state.voice_enabled:
                 st.write("Generating voice response...")
+                loop = None
                 try:
                     selected_voice = st.session_state.get('selected_voice', 'en-GB-SoniaNeural')
                     loop = asyncio.new_event_loop()
@@ -917,14 +921,25 @@ if user_input and index is not None:
                     audio_data = loop.run_until_complete(
                         text_to_speech(result['analysis'], selected_voice)
                     )
-                    loop.close()
                 except Exception as e:
-                    st.write(f"Voice generation skipped: {e}")
+                    tts_warning = f"Voice generation skipped: {e}"
+                    result["warning"] = (
+                        f"{result['warning']}; {tts_warning}"
+                        if result.get("warning")
+                        else tts_warning
+                    )
+                finally:
+                    if loop is not None:
+                        loop.close()
         
             processing_status.update(label="Complete", state="complete", expanded=False)
 
-    # Add assistant message only when analysis succeeded
-    if not result.get("error"):
+    if result.get("error"):
+        st.session_state.messages.append({
+            "role": "assistant",
+            "error": result["error"]
+        })
+    else:
         st.session_state.messages.append({
             "role": "assistant",
             "content": result['analysis'],
