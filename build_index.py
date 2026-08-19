@@ -7,19 +7,23 @@ Uses sentence-transformers (local, no API key needed) for embeddings.
 
 import os
 import json
+import sys
+import logging
 import numpy as np
 import faiss
 from sentence_transformers import SentenceTransformer
 from tqdm import tqdm
 
+logger = logging.getLogger(__name__)
+
 # Configuration
 DATA_FILE = "eu_news_data.json"
 INDEX_FILE = "news_index.faiss"
+ITEMS_FILE = "items.json"
 EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 EMBEDDING_DIM = 384
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 200
-ITEMS_FILE = "items.json"
 
 # Force CPU to avoid GPU compatibility issues
 os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
@@ -44,12 +48,13 @@ def simple_text_splitter(text, chunk_size=CHUNK_SIZE, overlap=CHUNK_OVERLAP):
             break
     return chunks
 
+
 def generate_embedding(text):
-    """Generate embedding for text using local sentence-transformers model."""
+    """Generate one embedding for a text string."""
     try:
         return embed_model.encode(text).tolist()
-    except Exception as e:
-        print(f"Failed to embed text: {e}")
+    except Exception:
+        logger.exception("Failed to generate an embedding.")
         return None
 
 def main():
@@ -59,14 +64,35 @@ def main():
     
     # Load news data
     print(f"\n📂 Loading data from {DATA_FILE}...")
-    with open(DATA_FILE, 'r', encoding='utf-8') as f:
-        news_data = json.load(f)
+    try:
+        with open(DATA_FILE, 'r', encoding='utf-8') as f:
+            news_data = json.load(f)
+    except FileNotFoundError:
+        print(f"❌ Data file not found: {DATA_FILE}. Run scrape_eu_news.py first.")
+        sys.exit(1)
+    except json.JSONDecodeError as e:
+        print(f"❌ Invalid JSON in {DATA_FILE}: {e}. Fix the file or run the scraper again.")
+        sys.exit(1)
+    except (OSError, UnicodeError) as e:
+        print(f"❌ Could not read {DATA_FILE}: {e}")
+        sys.exit(1)
     print(f"   Loaded {len(news_data)} articles")
     
     # Process articles into chunks
     print(f"\n📝 Processing articles into chunks...")
     items = []
-    for article in news_data:
+    skipped_articles = 0
+    for article_number, article in enumerate(news_data, start=1):
+        if (
+            not isinstance(article, dict)
+            or not all(field in article for field in ("date", "title", "content"))
+            or not all(isinstance(article[field], str) and article[field].strip()
+                       for field in ("date", "title", "content"))
+        ):
+            skipped_articles += 1
+            print(f"   ⚠️ Skipping malformed article {article_number}: expected date, title, and content.")
+            continue
+
         # Combine fields for embedding
         full_text = f"Date: {article['date']}\nTitle: {article['title']}\n\n{article['content']}"
         
@@ -86,6 +112,11 @@ def main():
             })
     
     print(f"   Created {len(items)} text chunks")
+    print(f"   Skipped malformed articles: {skipped_articles}")
+
+    if not items:
+        print("❌ No valid article chunks were created; index build aborted.")
+        sys.exit(1)
     
     # Generate embeddings in batches for speed
     print(f"\n🧠 Generating embeddings (local model, no API needed)...")
@@ -96,14 +127,23 @@ def main():
     with tqdm(total=len(texts), desc="Embeddings") as pbar:
         for i in range(0, len(texts), batch_size):
             batch = texts[i:i + batch_size]
-            embeddings = embed_model.encode(batch, show_progress_bar=False)
+            batch_end = i + len(batch) - 1
+            try:
+                embeddings = embed_model.encode(batch, show_progress_bar=False)
+            except Exception as e:
+                logger.exception("Embedding batch %s-%s failed.", i, batch_end)
+                print(f"❌ Embedding batch {i}-{batch_end} failed: {e}")
+                sys.exit(1)
             all_embeddings_list.extend(embeddings.tolist())
             pbar.update(len(batch))
 
+    for item, emb in zip(items, all_embeddings_list):
+        item['embedding'] = emb
+
     # Build FAISS index
     print(f"\n🔍 Building FAISS index...")
-    all_embeddings = np.array(all_embeddings_list, dtype=np.float32)
-    
+    all_embeddings = np.array([item['embedding'] for item in items], dtype=np.float32)
+
     index = faiss.IndexFlatL2(EMBEDDING_DIM)
     index.add(all_embeddings)
     
@@ -113,12 +153,24 @@ def main():
     print(f"\n💾 Saving files...")
     
     # Save FAISS index
-    faiss.write_index(index, INDEX_FILE)
+    try:
+        faiss.write_index(index, INDEX_FILE)
+    except Exception as e:
+        logger.exception("Failed to write %s.", INDEX_FILE)
+        print(f"❌ Failed to write {INDEX_FILE}: {e}")
+        sys.exit(1)
     print(f"   ✅ {INDEX_FILE}")
     
     # Save chunk text and metadata separately from the embeddings.
-    with open(ITEMS_FILE, "w", encoding="utf-8") as f:
-        json.dump(items, f, ensure_ascii=False, indent=2)
+    items_data = [{key: value for key, value in item.items() if key != "embedding"}
+                  for item in items]
+    try:
+        with open(ITEMS_FILE, "w", encoding="utf-8") as f:
+            json.dump(items_data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.exception("Failed to write %s.", ITEMS_FILE)
+        print(f"❌ Failed to write {ITEMS_FILE}: {e}")
+        sys.exit(1)
     print(f"   ✅ {ITEMS_FILE}")
     
     print("\n" + "=" * 60)
