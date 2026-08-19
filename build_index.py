@@ -5,30 +5,28 @@ Generates embeddings for all articles and creates a FAISS index for semantic sea
 Uses sentence-transformers (local, no API key needed) for embeddings.
 """
 
-import os
-import json
 import pickle
 import numpy as np
 import faiss
-from sentence_transformers import SentenceTransformer
 from tqdm import tqdm
 
+from common import (
+    DATA_FILE,
+    INDEX_FILE,
+    EMBEDDINGS_FILE,
+    METADATA_FILE,
+    EMBEDDING_DIM,
+    load_embedding_model,
+    load_news_data,
+)
+
 # Configuration
-DATA_FILE = "eu_news_data.json"
-INDEX_FILE = "news_index.faiss"
-EMBEDDINGS_FILE = "items_with_embeddings.pkl"
-METADATA_FILE = "items_metadata.pkl"
-EMBEDDING_MODEL = "all-MiniLM-L6-v2"
-EMBEDDING_DIM = 384
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 200
 
-# Force CPU to avoid GPU compatibility issues
-os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
-
 # Load embedding model once
 print("Loading embedding model...")
-embed_model = SentenceTransformer(EMBEDDING_MODEL, device="cpu")
+embed_model = load_embedding_model()
 
 def simple_text_splitter(text, chunk_size=CHUNK_SIZE, overlap=CHUNK_OVERLAP):
     """Split text into overlapping chunks."""
@@ -46,14 +44,6 @@ def simple_text_splitter(text, chunk_size=CHUNK_SIZE, overlap=CHUNK_OVERLAP):
             break
     return chunks
 
-def generate_embedding(text):
-    """Generate embedding for text using local sentence-transformers model."""
-    try:
-        return embed_model.encode(text).tolist()
-    except Exception as e:
-        print(f"Failed to embed text: {e}")
-        return None
-
 def main():
     print("=" * 60)
     print("🔨 BUILDING FAISS INDEX")
@@ -61,8 +51,7 @@ def main():
     
     # Load news data
     print(f"\n📂 Loading data from {DATA_FILE}...")
-    with open(DATA_FILE, 'r', encoding='utf-8') as f:
-        news_data = json.load(f)
+    news_data = load_news_data()
     print(f"   Loaded {len(news_data)} articles")
     
     # Process articles into chunks

@@ -12,15 +12,16 @@ How it works:
 """
 
 import json
-import os
 import requests
 from datetime import datetime
 from bs4 import BeautifulSoup
 import time
 import re
 
+from common import DATA_FILE, DISPLAY_DATE_FORMAT, dedupe_by
+
 # --- CONFIGURATION ---
-OUTPUT_FILE = r"D:\NLP_Projects\EU_News_Analyst\eu_news_data.json"
+OUTPUT_FILE = DATA_FILE
 BASE_URL = "https://commission.europa.eu"
 NEWS_PAGE = "https://commission.europa.eu/news-and-media/news_en"
 
@@ -204,12 +205,7 @@ def scrape_news_page(page_num):
                 })
         
         # Remove duplicates (keep first occurrence)
-        seen_urls = set()
-        unique_links = []
-        for link in article_links:
-            if link['url'] not in seen_urls:
-                seen_urls.add(link['url'])
-                unique_links.append(link)
+        unique_links = dedupe_by(article_links, lambda link: link['url'])
         
         print(f"   📰 Found {len(unique_links)} article links")
         return unique_links, True
@@ -288,10 +284,10 @@ def main():
                     if article_date < oldest_date_seen:
                         oldest_date_seen = article_date
                     
-                    date_str = article_date.strftime("%A, %d %B %Y")
+                    date_str = article_date.strftime(DISPLAY_DATE_FORMAT)
                 else:
                     # No date found - use today
-                    date_str = datetime.now().strftime("%A, %d %B %Y")
+                    date_str = datetime.now().strftime(DISPLAY_DATE_FORMAT)
                 
                 # Only add if content is substantial (>200 chars)
                 if len(article_data['content']) > 200:
@@ -317,12 +313,7 @@ def main():
     # --- FINAL CLEANUP ---
     
     # Remove duplicates by title (some articles might appear on multiple pages)
-    seen_titles = set()
-    unique_articles = []
-    for article in all_articles:
-        if article['title'] not in seen_titles:
-            seen_titles.add(article['title'])
-            unique_articles.append(article)
+    unique_articles = dedupe_by(all_articles, lambda article: article['title'])
     
     # --- SAVE RESULTS ---
     print("\n" + "=" * 60)

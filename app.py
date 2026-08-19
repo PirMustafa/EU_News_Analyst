@@ -4,16 +4,17 @@ A professional news analysis system with voice interaction
 """
 
 import streamlit as st
-import json
 import os
 from datetime import datetime
 import tempfile
 import asyncio
 import numpy as np
 
+import common
+
 # --- CONFIGURATION ---
 CURRENT_DATE = datetime.now()
-DATE_STR = CURRENT_DATE.strftime("%A, %d %B %Y")
+DATE_STR = CURRENT_DATE.strftime(common.DISPLAY_DATE_FORMAT)
 
 st.set_page_config(
     page_title=f"EU Intelligence Briefing - {CURRENT_DATE.strftime('%d %b %Y')}",
@@ -184,12 +185,9 @@ st.markdown("""
 @st.cache_resource
 def load_dependencies():
     """Load heavy dependencies once."""
-    import os
-    os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
-    from sentence_transformers import SentenceTransformer
     import faiss
     import pickle
-    embed_model = SentenceTransformer("all-MiniLM-L6-v2", device="cpu")
+    embed_model = common.load_embedding_model()
     return embed_model, faiss, pickle
 
 # --- API SETUP ---
@@ -217,8 +215,8 @@ embed_model, faiss, pickle = load_dependencies()
 def load_data():
     """Load FAISS index and embeddings data."""
     try:
-        index = faiss.read_index("news_index.faiss")
-        with open("items_with_embeddings.pkl", "rb") as f:
+        index = faiss.read_index(common.INDEX_FILE)
+        with open(common.EMBEDDINGS_FILE, "rb") as f:
             items_with_embeddings = pickle.load(f)
         
         items = []
@@ -229,10 +227,7 @@ def load_data():
             })
         
         # Load raw news data
-        news_data = []
-        if os.path.exists("eu_news_data.json"):
-            with open("eu_news_data.json", 'r', encoding='utf-8') as f:
-                news_data = json.load(f)
+        news_data = common.load_news_data()
         
         unique_articles = len(set(item["metadata"]["title"] for item in items_with_embeddings))
         return index, items, news_data, {"articles": unique_articles, "chunks": len(items)}, "Online"
@@ -243,7 +238,7 @@ def load_data():
 def get_embedding(text):
     """Generate embedding for text using local sentence-transformers model."""
     try:
-        return embed_model.encode(text).tolist()
+        return common.embed_text(embed_model, text)
     except Exception as e:
         st.error(f"Embedding error: {e}")
         return None
