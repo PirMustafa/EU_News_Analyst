@@ -13,6 +13,8 @@ import tempfile
 import asyncio
 import numpy as np
 
+import common
+
 logger = logging.getLogger(__name__)
 
 
@@ -34,7 +36,7 @@ class SpeechToTextError(Exception):
 
 # --- CONFIGURATION ---
 CURRENT_DATE = datetime.now()
-DATE_STR = CURRENT_DATE.strftime("%A, %d %B %Y")
+DATE_STR = CURRENT_DATE.strftime(common.DISPLAY_DATE_FORMAT)
 
 st.set_page_config(
     page_title=f"EU Intelligence Briefing - {CURRENT_DATE.strftime('%d %b %Y')}",
@@ -205,12 +207,9 @@ st.markdown("""
 @st.cache_resource
 def load_dependencies():
     """Load heavy dependencies once."""
-    import os
-    os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
-    from sentence_transformers import SentenceTransformer
     import faiss
     import pickle
-    embed_model = SentenceTransformer("all-MiniLM-L6-v2", device="cpu")
+    embed_model = common.load_embedding_model()
     return embed_model, faiss, pickle
 
 # --- API SETUP ---
@@ -239,32 +238,32 @@ embed_model, faiss, pickle = load_dependencies()
 @st.cache_resource
 def load_data():
     """Load FAISS index and embeddings data."""
-    missing_index_status = "Offline: news_index.faiss is missing. Run build_index.py."
+    missing_index_status = f"Offline: {common.INDEX_FILE} is missing. Run build_index.py."
     try:
-        index = faiss.read_index("news_index.faiss")
+        index = faiss.read_index(common.INDEX_FILE)
     except FileNotFoundError:
         logger.warning("FAISS index is missing; the application is offline.")
         return None, [], [], {}, missing_index_status
     except Exception:
-        if not os.path.exists("news_index.faiss"):
+        if not os.path.exists(common.INDEX_FILE):
             logger.warning("FAISS index is missing; the application is offline.")
             return None, [], [], {}, missing_index_status
         logger.exception("FAISS index is corrupt or unreadable.")
-        return None, [], [], {}, "Offline: news_index.faiss is corrupt or unreadable."
+        return None, [], [], {}, f"Offline: {common.INDEX_FILE} is corrupt or unreadable."
 
     try:
-        with open("items_with_embeddings.pkl", "rb") as f:
+        with open(common.EMBEDDINGS_FILE, "rb") as f:
             items_with_embeddings = pickle.load(f)
     except FileNotFoundError:
         logger.warning("Embedding metadata file is missing; the application is offline.")
-        return None, [], [], {}, "Offline: items_with_embeddings.pkl is missing. Run build_index.py."
+        return None, [], [], {}, f"Offline: {common.EMBEDDINGS_FILE} is missing. Run build_index.py."
     except Exception:
         logger.exception("Embedding metadata file is corrupt or unreadable.")
-        return None, [], [], {}, "Offline: items_with_embeddings.pkl is corrupt or unreadable."
+        return None, [], [], {}, f"Offline: {common.EMBEDDINGS_FILE} is corrupt or unreadable."
 
     if not isinstance(items_with_embeddings, list):
         logger.error("Embedding metadata file did not contain a list of items.")
-        return None, [], [], {}, "Offline: items_with_embeddings.pkl has an invalid structure. Run build_index.py."
+        return None, [], [], {}, f"Offline: {common.EMBEDDINGS_FILE} has an invalid structure. Run build_index.py."
 
     items = []
     for position, item in enumerate(items_with_embeddings):
@@ -289,19 +288,19 @@ def load_data():
         items.append({"text": text, "meta": metadata})
 
     news_data = []
-    if os.path.exists("eu_news_data.json"):
+    if os.path.exists(common.DATA_FILE):
         try:
-            with open("eu_news_data.json", 'r', encoding='utf-8') as f:
+            with open(common.DATA_FILE, 'r', encoding='utf-8') as f:
                 news_data = json.load(f)
         except json.JSONDecodeError as e:
             logger.exception("News data JSON is malformed.")
-            return None, [], [], {}, f"Offline: eu_news_data.json contains invalid JSON ({e})."
+            return None, [], [], {}, f"Offline: {common.DATA_FILE} contains invalid JSON ({e})."
         except (OSError, UnicodeError):
             logger.exception("News data JSON is unreadable.")
-            return None, [], [], {}, "Offline: eu_news_data.json is unreadable."
+            return None, [], [], {}, f"Offline: {common.DATA_FILE} is unreadable."
         if not isinstance(news_data, list):
             logger.error("News data JSON did not contain a list of articles.")
-            return None, [], [], {}, "Offline: eu_news_data.json has an invalid structure."
+            return None, [], [], {}, f"Offline: {common.DATA_FILE} has an invalid structure."
 
     unique_articles = len(set(item["meta"]["title"] for item in items))
     return index, items, news_data, {"articles": unique_articles, "chunks": len(items)}, "Online"
@@ -310,7 +309,7 @@ def load_data():
 def get_embedding(text):
     """Generate embedding for text using local sentence-transformers model."""
     try:
-        return embed_model.encode(text).tolist()
+        return common.embed_text(embed_model, text)
     except Exception as e:
         logger.exception("Failed to generate an embedding for the query.")
         raise EmbeddingError(f"Semantic retrieval is unavailable: {e}") from e
