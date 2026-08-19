@@ -1,8 +1,10 @@
 """Unit tests for the chunking / index building pipeline."""
 
-import pickle
+import json
 
 import pytest
+
+from common import ITEMS_FILE
 
 
 class TestSimpleTextSplitter:
@@ -63,8 +65,7 @@ class TestMain:
     def run_main(self, build_index_module, monkeypatch, news_json, tmp_path):
         def _run():
             monkeypatch.setattr(build_index_module, "DATA_FILE", str(news_json))
-            monkeypatch.setattr(build_index_module, "EMBEDDINGS_FILE", str(tmp_path / "items.pkl"))
-            monkeypatch.setattr(build_index_module, "METADATA_FILE", str(tmp_path / "meta.pkl"))
+            monkeypatch.setattr(build_index_module, "ITEMS_FILE", str(tmp_path / ITEMS_FILE))
             monkeypatch.setattr(build_index_module, "INDEX_FILE", str(tmp_path / "news.faiss"))
             monkeypatch.setattr(build_index_module, "EMBEDDING_DIM", 4)
             build_index_module.main()
@@ -72,17 +73,16 @@ class TestMain:
 
         return _run
 
-    def test_writes_index_and_pickles(self, build_index_module, run_main):
+    def test_writes_index_and_json_items(self, build_index_module, run_main):
         out = run_main()
 
         build_index_module.faiss.write_index.assert_called_once()
-        assert (out / "items.pkl").exists()
-        assert (out / "meta.pkl").exists()
+        assert (out / ITEMS_FILE).exists()
 
     def test_long_articles_are_chunked_into_multiple_items(self, run_main, tmp_path):
         run_main()
 
-        items = pickle.loads((tmp_path / "items.pkl").read_bytes())
+        items = json.loads((tmp_path / ITEMS_FILE).read_text(encoding="utf-8"))
         chunks_per_title = {}
         for item in items:
             chunks_per_title.setdefault(item["metadata"]["title"], 0)
@@ -90,26 +90,26 @@ class TestMain:
         assert chunks_per_title["First article"] > 1
         assert chunks_per_title["Second article"] == 1
 
-    def test_items_carry_article_metadata_and_embeddings(self, run_main, tmp_path):
+    def test_items_carry_article_metadata_without_embeddings(self, run_main, tmp_path):
         run_main()
 
-        item = pickle.loads((tmp_path / "items.pkl").read_bytes())[0]
+        item = json.loads((tmp_path / ITEMS_FILE).read_text(encoding="utf-8"))[0]
         assert item["type"] == "text"
         assert item["metadata"]["source"] == "European Commission"
         assert item["metadata"]["url"].startswith("https://")
-        assert len(item["embedding"]) == 4
+        assert "embedding" not in item
         assert item["text"].startswith("Date: ")
 
-    def test_metadata_file_excludes_embeddings(self, run_main, tmp_path):
+    def test_items_json_excludes_embeddings(self, run_main, tmp_path):
         run_main()
 
-        metadata_items = pickle.loads((tmp_path / "meta.pkl").read_bytes())
-        assert all("embedding" not in item for item in metadata_items)
-        assert all("text" in item for item in metadata_items)
+        items = json.loads((tmp_path / ITEMS_FILE).read_text(encoding="utf-8"))
+        assert all("embedding" not in item for item in items)
+        assert all("text" in item for item in items)
 
     def test_every_chunk_is_added_to_the_index(self, build_index_module, run_main, tmp_path):
         run_main()
 
-        items = pickle.loads((tmp_path / "items.pkl").read_bytes())
+        items = json.loads((tmp_path / ITEMS_FILE).read_text(encoding="utf-8"))
         index = build_index_module.faiss.write_index.call_args.args[0]
         assert index.ntotal == len(items)

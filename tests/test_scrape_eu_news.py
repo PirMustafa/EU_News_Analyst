@@ -111,6 +111,7 @@ class TestScrapeNewsPage:
         html = """
         <a href="/news/first-article-with-long-title_en">First article with a long title</a>
         <a href="https://commission.europa.eu/news/second-article_en">Second article with long title</a>
+        <a href="https://commission.europa.eu.evil.com/news/attacker">Attacker-controlled host</a>
         """
         monkeypatch.setattr(scraper.requests, "get", MagicMock(return_value=_response(html)))
 
@@ -121,6 +122,15 @@ class TestScrapeNewsPage:
             scraper.BASE_URL + "/news/first-article-with-long-title_en",
             "https://commission.europa.eu/news/second-article_en",
         ]
+
+    def test_rejects_lookalike_commission_host(self, scraper, monkeypatch):
+        html = '<a href="https://commission.europa.eu.evil.com/news/article">A long attacker article title</a>'
+        monkeypatch.setattr(scraper.requests, "get", MagicMock(return_value=_response(html)))
+
+        links, success = scraper.scrape_news_page(1)
+
+        assert success is True
+        assert links == []
 
     def test_skips_navigation_short_and_non_news_links(self, scraper, monkeypatch):
         html = """

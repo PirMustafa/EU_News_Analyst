@@ -13,7 +13,7 @@ venv/
 
 # Large binary/data files (regeneratable)
 *.faiss
-*.pkl
+items.json
 __pycache__/
 *.pyc
 *.pyo

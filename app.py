@@ -12,6 +12,7 @@ from datetime import datetime
 import tempfile
 import asyncio
 import numpy as np
+from urllib.parse import urlparse
 
 import common
 
@@ -37,6 +38,8 @@ class SpeechToTextError(Exception):
 # --- CONFIGURATION ---
 CURRENT_DATE = datetime.now()
 DATE_STR = CURRENT_DATE.strftime(common.DISPLAY_DATE_FORMAT)
+MAX_QUERY_CHARS = 1000
+MAX_AUDIO_BYTES = 10 * 1024 * 1024
 
 st.set_page_config(
     page_title=f"EU Intelligence Briefing - {CURRENT_DATE.strftime('%d %b %Y')}",
@@ -208,9 +211,8 @@ st.markdown("""
 def load_dependencies():
     """Load heavy dependencies once."""
     import faiss
-    import pickle
     embed_model = common.load_embedding_model()
-    return embed_model, faiss, pickle
+    return embed_model, faiss
 
 # --- API SETUP ---
 # Read Groq API key from secrets or environment
@@ -232,12 +234,12 @@ if not groq_api_key:
     st.error("CRITICAL: No GROQ_API_KEY found. Please set it in .streamlit/secrets.toml")
     st.stop()
 
-embed_model, faiss, pickle = load_dependencies()
+embed_model, faiss = load_dependencies()
 
 # --- DATA LOADING ---
 @st.cache_resource
 def load_data():
-    """Load FAISS index and embeddings data."""
+    """Load FAISS index and JSON metadata."""
     missing_index_status = f"Offline: {common.INDEX_FILE} is missing. Run build_index.py."
     try:
         index = faiss.read_index(common.INDEX_FILE)
@@ -252,21 +254,24 @@ def load_data():
         return None, [], [], {}, f"Offline: {common.INDEX_FILE} is corrupt or unreadable."
 
     try:
-        with open(common.EMBEDDINGS_FILE, "rb") as f:
-            items_with_embeddings = pickle.load(f)
+        with open(common.ITEMS_FILE, "r", encoding="utf-8") as f:
+            items_data = json.load(f)
     except FileNotFoundError:
         logger.warning("Embedding metadata file is missing; the application is offline.")
-        return None, [], [], {}, f"Offline: {common.EMBEDDINGS_FILE} is missing. Run build_index.py."
-    except Exception:
-        logger.exception("Embedding metadata file is corrupt or unreadable.")
-        return None, [], [], {}, f"Offline: {common.EMBEDDINGS_FILE} is corrupt or unreadable."
+        return None, [], [], {}, f"Offline: {common.ITEMS_FILE} is missing. Run build_index.py."
+    except json.JSONDecodeError:
+        logger.exception("JSON metadata file is corrupt or unreadable.")
+        return None, [], [], {}, f"Offline: {common.ITEMS_FILE} is corrupt or unreadable (invalid JSON)."
+    except (OSError, UnicodeError):
+        logger.exception("JSON metadata file is corrupt or unreadable.")
+        return None, [], [], {}, f"Offline: {common.ITEMS_FILE} is corrupt or unreadable."
 
-    if not isinstance(items_with_embeddings, list):
+    if not isinstance(items_data, list):
         logger.error("Embedding metadata file did not contain a list of items.")
-        return None, [], [], {}, f"Offline: {common.EMBEDDINGS_FILE} has an invalid structure. Run build_index.py."
+        return None, [], [], {}, f"Offline: {common.ITEMS_FILE} has an invalid structure. Run build_index.py."
 
     items = []
-    for position, item in enumerate(items_with_embeddings):
+    for position, item in enumerate(items_data):
         try:
             text = item["text"]
             metadata = item["metadata"]
@@ -313,6 +318,26 @@ def get_embedding(text):
     except Exception as e:
         logger.exception("Failed to generate an embedding for the query.")
         raise EmbeddingError(f"Semantic retrieval is unavailable: {e}") from e
+
+
+def validate_query(user_input):
+    """Strip and validate a user query before it reaches the prompt."""
+    query = user_input.strip() if isinstance(user_input, str) else ""
+    if not query:
+        st.error("Please enter a question.")
+        return None
+    if len(query) > MAX_QUERY_CHARS:
+        st.error(f"Your question is too long. Please keep it under {MAX_QUERY_CHARS} characters.")
+        return None
+    return query
+
+
+def is_safe_source_link(link):
+    """Allow only absolute HTTP(S) links in rendered source citations."""
+    if not isinstance(link, str):
+        return False
+    parsed = urlparse(link)
+    return parsed.scheme.lower() in {"http", "https"} and bool(parsed.netloc)
 
 
 def _groq_error_message(response):
@@ -406,6 +431,10 @@ async def text_to_speech(text, voice="en-GB-SoniaNeural"):
 
 def speech_to_text(audio_bytes):
     """Convert speech to text."""
+    if len(audio_bytes) > MAX_AUDIO_BYTES:
+        raise SpeechToTextError(
+            f"Audio file is too large. Please keep it under {MAX_AUDIO_BYTES // (1024 * 1024)} MB."
+        )
     temp_path = None
     try:
         import speech_recognition as sr
@@ -754,6 +783,7 @@ with st.sidebar:
             except SpeechToTextError as e:
                 st.warning(str(e))
             else:
+                transcribed = validate_query(transcribed) if transcribed else None
                 if transcribed:
                     st.session_state.transcribed_text = transcribed
                     st.success(f"Heard: {transcribed}")
@@ -782,6 +812,7 @@ with st.sidebar:
                 except SpeechToTextError as e:
                     st.warning(str(e))
                 else:
+                    transcribed = validate_query(transcribed) if transcribed else None
                     if transcribed:
                         st.success(f"Transcribed: {transcribed}")
                         if st.button("Use this query", key="use_file_query"):
@@ -835,7 +866,7 @@ for msg in st.session_state.messages:
                     for src in msg['sources']:
                         st.markdown(f"**{src['title']}**")
                         st.caption(f"{src['source']} | {src['date']}")
-                        if src.get('link'):
+                        if src.get('link') and is_safe_source_link(src['link']):
                             st.markdown(f"[Read original]({src['link']})")
                         st.markdown("---")
             
@@ -864,6 +895,7 @@ else:
                 except SpeechToTextError as e:
                     st.warning(str(e))
                 else:
+                    transcribed = validate_query(transcribed) if transcribed else None
                     if transcribed:
                         st.session_state.voice_query = transcribed
                         st.session_state.main_audio_processed = True
@@ -874,6 +906,8 @@ else:
             st.session_state.main_audio_processed = False
 
 # --- PROCESS QUERY ---
+user_input = validate_query(user_input) if user_input is not None else None
+
 if user_input and index is None:
     st.error(f"System is offline and cannot process your question. {status}")
 

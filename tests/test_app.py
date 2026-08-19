@@ -1,9 +1,12 @@
 """Unit tests for the RAG logic inside the Streamlit app."""
 
 import asyncio
+import json
 from unittest.mock import MagicMock
 
 import pytest
+
+from common import ITEMS_FILE
 
 
 class TestDetectQueryType:
@@ -41,6 +44,21 @@ class TestDetectQueryType:
         assert app_module.detect_query_type(query, []) == "detailed"
 
 
+class TestQueryValidation:
+    def test_empty_query_is_rejected(self, app_module):
+        app_module.st.error.reset_mock()
+        assert app_module.validate_query(" \t\n") is None
+        app_module.st.error.assert_called_once()
+
+    def test_over_limit_query_is_rejected(self, app_module):
+        app_module.st.error.reset_mock()
+        assert app_module.validate_query("x" * (app_module.MAX_QUERY_CHARS + 1)) is None
+        app_module.st.error.assert_called_once()
+
+    def test_valid_query_is_stripped_and_returned(self, app_module):
+        assert app_module.validate_query("  tell me the news  ") == "tell me the news"
+
+
 class TestGetEmbedding:
     def test_returns_a_list(self, app_module):
         assert app_module.get_embedding("query text") == [0.0, 0.0, 0.0, 0.0]
@@ -48,12 +66,14 @@ class TestGetEmbedding:
     def test_returns_none_on_failure(self, app_module, monkeypatch):
         monkeypatch.setattr(app_module.embed_model, "encode",
                             MagicMock(side_effect=RuntimeError("no model")))
-        assert app_module.get_embedding("query text") is None
+        with pytest.raises(app_module.EmbeddingError, match="Semantic retrieval is unavailable"):
+            app_module.get_embedding("query text")
 
 
 class TestGroqGenerate:
     def _post(self, content="generated text"):
         response = MagicMock()
+        response.status_code = 200
         response.json.return_value = {"choices": [{"message": {"content": content}}]}
         return MagicMock(return_value=response)
 
@@ -82,10 +102,11 @@ class TestGroqGenerate:
         import requests
 
         response = MagicMock()
-        response.raise_for_status.side_effect = RuntimeError("429 rate limited")
+        response.status_code = 429
+        response.json.return_value = {"error": {"message": "rate limited"}}
         monkeypatch.setattr(requests, "post", MagicMock(return_value=response))
 
-        with pytest.raises(RuntimeError):
+        with pytest.raises(app_module.GroqAPIError, match="HTTP 429"):
             app_module.groq_generate("prompt")
 
 
@@ -139,7 +160,7 @@ class TestAnalyzeQuery:
 
         result = app_module.analyze_query("headlines", todays_articles, index=None, items=[])
 
-        assert "Error generating overview" in result["analysis"]
+        assert "Error generating overview" in result["error"]
         assert result["sources"]
 
     def test_detailed_mode_returns_analysis_and_thoughts(
@@ -215,7 +236,7 @@ class TestAnalyzeQuery:
         result = app_module.analyze_query("why steel tariffs", todays_articles, index=None,
                                          items=[], query_type="detailed")
 
-        assert "Analysis generation failed" in result["analysis"]
+        assert "Analysis generation failed" in result["error"]
         assert result["thoughts"] == ""
 
     def test_auto_mode_delegates_to_query_type_detection(
@@ -233,7 +254,8 @@ class TestAnalyzeQuery:
 
 class TestSpeechToText:
     def test_returns_none_when_recognition_is_unavailable(self, app_module):
-        assert app_module.speech_to_text(b"not audio") is None
+        with pytest.raises(app_module.SpeechToTextError):
+            app_module.speech_to_text(b"not audio")
 
     @staticmethod
     def _stub_recognizer(monkeypatch, recognize):
@@ -260,6 +282,8 @@ class TestSpeechToText:
             def recognize_google(self, audio_data):
                 return recognize(audio_data)
 
+        module.UnknownValueError = type("UnknownValueError", (Exception,), {})
+        module.RequestError = type("RequestError", (Exception,), {})
         module.AudioFile = _AudioFile
         module.Recognizer = _Recognizer
         monkeypatch.setitem(sys.modules, "speech_recognition", module)
@@ -279,14 +303,42 @@ class TestSpeechToText:
 
         self._stub_recognizer(monkeypatch, _boom)
 
-        assert app_module.speech_to_text(b"RIFFfake") is None
+        with pytest.raises(app_module.SpeechToTextError):
+            app_module.speech_to_text(b"RIFFfake")
+
+    def test_rejects_oversized_audio_before_transcription(self, app_module, monkeypatch):
+        recognizer = MagicMock()
+        monkeypatch.setitem(__import__("sys").modules, "speech_recognition", recognizer)
+
+        with pytest.raises(app_module.SpeechToTextError, match="too large"):
+            app_module.speech_to_text(b"x" * (app_module.MAX_AUDIO_BYTES + 1))
+        recognizer.Recognizer.assert_not_called()
+
+
+class TestSourceLinks:
+    @pytest.mark.parametrize("link", [
+        "http://example.com/article",
+        "https://commission.europa.eu/news/article",
+    ])
+    def test_accepts_http_source_links(self, app_module, link):
+        assert app_module.is_safe_source_link(link)
+
+    @pytest.mark.parametrize("link", [
+        "javascript:alert(1)",
+        "data:text/plain,unsafe",
+        "/relative/article",
+        "not a url",
+    ])
+    def test_rejects_unsafe_source_links(self, app_module, link):
+        assert not app_module.is_safe_source_link(link)
 
 
 class TestTextToSpeech:
     def test_returns_none_when_edge_tts_is_unavailable(self, app_module, monkeypatch):
         monkeypatch.setitem(__import__("sys").modules, "edge_tts", None)
 
-        assert asyncio.run(app_module.text_to_speech("hello")) is None
+        with pytest.raises(ModuleNotFoundError):
+            asyncio.run(app_module.text_to_speech("hello"))
 
     def test_strips_markdown_urls_and_sources_before_synthesis(self, app_module, monkeypatch):
         import sys
@@ -327,18 +379,17 @@ class TestLoadData:
 
         assert index is None
         assert (items, news_data, stats) == ([], [], {})
-        assert status.startswith("Error:")
+        assert status.startswith("Offline:")
 
     def test_loads_items_news_and_stats(self, app_module, monkeypatch, tmp_path, article_factory):
         import json
-        import pickle
 
-        items_with_embeddings = [
-            {"text": "chunk 1", "metadata": {"title": "A"}, "embedding": [0.0]},
-            {"text": "chunk 2", "metadata": {"title": "A"}, "embedding": [0.0]},
-            {"text": "chunk 3", "metadata": {"title": "B"}, "embedding": [0.0]},
+        items = [
+            {"type": "text", "text": "chunk 1", "metadata": {"title": "A"}},
+            {"type": "text", "text": "chunk 2", "metadata": {"title": "A"}},
+            {"type": "text", "text": "chunk 3", "metadata": {"title": "B"}},
         ]
-        (tmp_path / "items_with_embeddings.pkl").write_bytes(pickle.dumps(items_with_embeddings))
+        (tmp_path / ITEMS_FILE).write_text(json.dumps(items), encoding="utf-8")
         (tmp_path / "eu_news_data.json").write_text(json.dumps([article_factory()]), encoding="utf-8")
         monkeypatch.chdir(tmp_path)
 
@@ -349,3 +400,23 @@ class TestLoadData:
         assert items[0] == {"text": "chunk 1", "meta": {"title": "A"}}
         assert len(news_data) == 1
         assert stats == {"articles": 2, "chunks": 3}
+
+    @pytest.mark.parametrize(
+        ("contents", "expected"),
+        [
+            ("{invalid", "corrupt or unreadable"),
+            (json.dumps({"text": "not a list"}), "invalid structure"),
+            (json.dumps([{"text": "missing metadata"}]), "malformed"),
+        ],
+    )
+    def test_reports_items_json_error_paths(
+            self, app_module, monkeypatch, tmp_path, contents, expected):
+        (tmp_path / "news_index.faiss").write_text("placeholder", encoding="utf-8")
+        (tmp_path / ITEMS_FILE).write_text(contents, encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+
+        index, items, news_data, stats, status = app_module.load_data()
+
+        assert index is None
+        assert (items, news_data, stats) == ([], [], {})
+        assert expected in status

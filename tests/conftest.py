@@ -105,6 +105,14 @@ class FakeSessionState(dict):
 
 def _fake_streamlit(secrets=None):
     module = types.ModuleType("streamlit")
+    errors = types.ModuleType("streamlit.errors")
+
+    class StreamlitSecretNotFoundError(Exception):
+        pass
+
+    errors.StreamlitSecretNotFoundError = StreamlitSecretNotFoundError
+    module.errors = errors
+    sys.modules["streamlit.errors"] = errors
     module.cache_resource = lambda func: func
     module.cache_data = lambda func: func
     module.session_state = FakeSessionState()

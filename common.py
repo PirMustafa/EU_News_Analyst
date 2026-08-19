@@ -8,8 +8,7 @@ import os
 # --- FILE PATHS ---
 DATA_FILE = "eu_news_data.json"
 INDEX_FILE = "news_index.faiss"
-EMBEDDINGS_FILE = "items_with_embeddings.pkl"
-METADATA_FILE = "items_metadata.pkl"
+ITEMS_FILE = "items.json"
 
 # --- EMBEDDINGS ---
 EMBEDDING_MODEL = "all-MiniLM-L6-v2"

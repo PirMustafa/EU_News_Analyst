@@ -20,6 +20,7 @@ from bs4 import BeautifulSoup
 import time
 import re
 import tempfile
+from urllib.parse import urlparse
 
 from common import DATA_FILE, DISPLAY_DATE_FORMAT, dedupe_by
 
@@ -197,20 +198,22 @@ def scrape_news_page(page_num):
         for link in all_links:
             href = link.get('href', '')
             
-            # Filter for actual news articles (contain /news/ in URL)
-            if '/news/' not in href:
-                continue
-            
-            # Skip navigation/category links
-            if 'news_en' in href or href.endswith('/news/'):
-                continue
-            
             # Build full URL
             if href.startswith('/'):
                 full_url = BASE_URL + href
-            elif href.startswith('http'):
+            elif href.startswith(('http://', 'https://')):
                 full_url = href
             else:
+                continue
+
+            parsed_url = urlparse(full_url)
+            if parsed_url.netloc.lower() != "commission.europa.eu":
+                continue
+            if '/news/' not in parsed_url.path:
+                continue
+
+            # Skip navigation/category links
+            if 'news_en' in parsed_url.path or parsed_url.path.endswith('/news/'):
                 continue
             
             # Get link text as potential title preview

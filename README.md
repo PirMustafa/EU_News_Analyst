@@ -109,8 +109,7 @@ EU_News_Analyst/
 
 # Generated files (gitignored — rebuild with build_index.py)
 # news_index.faiss
-# items_with_embeddings.pkl
-# items_metadata.pkl
+# items.json
 ```
 
 ---
@@ -135,7 +134,7 @@ pip install -r requirements.txt
 Create `.streamlit/secrets.toml`:
 
 ```toml
-GROQ_API_KEY = "gsk_your_key_here"
+GROQ_API_KEY = "your-groq-api-key"
 ```
 
 ### 4. Scrape news
@@ -166,9 +165,11 @@ Open **http://localhost:8501**
 ### Scraper — `scrape_eu_news.py`
 
 ```python
+import os
+
 CUTOFF_DATE = datetime(2026, 6, 1)   # Scrape from this date onwards
 MAX_PAGES   = 50                      # Safety limit on pagination
-OUTPUT_FILE = r"D:\...\eu_news_data.json"
+OUTPUT_FILE = os.getenv("EU_NEWS_OUTPUT_FILE", "eu_news_data.json")
 ```
 
 ### Index builder — `build_index.py`
@@ -200,7 +201,7 @@ Step 2 — Index           build_index.py
   └─ Splits articles into 1000-char chunks (200 overlap)
   └─ Embeds each chunk: sentence-transformers → 384-dim vector
   └─ Builds FAISS IndexFlatL2
-  └─ Output: news_index.faiss, items_with_embeddings.pkl, items_metadata.pkl
+  └─ Output: news_index.faiss, items.json
 
 Step 3 — Serve           app.py (runs continuously)
   └─ Loads index + embeddings at startup (cached)
@@ -571,9 +572,8 @@ EU_News_Analyst/
 |                               - Pre-computed embeddings
 |                               - Optimized for similarity search
 |
-|-- items_with_embeddings.pkl   Pickled embedding data
+|-- items.json                  JSON chunk text and metadata
 |                               - Text chunks with metadata
-|                               - Embedding vectors
 |
 |-- gpu_env/                    Python virtual environment
 |   |-- Scripts/                Windows executables
@@ -706,8 +706,10 @@ st.set_page_config(
 Modify scrape_eu_news.py for data acquisition settings:
 
 ```python
+import os
+
 # Output Configuration
-OUTPUT_FILE = "eu_news_data.json"
+OUTPUT_FILE = os.getenv("EU_NEWS_OUTPUT_FILE", "eu_news_data.json")
 TARGET_TOTAL_ARTICLES = 500
 
 # Date Range
@@ -827,7 +829,7 @@ What are EU member states' positions on migration policy reform?
 3. FAISS Index Construction
    |-- Build flat L2 index
    |-- Store index in news_index.faiss
-   |-- Serialize chunks in items_with_embeddings.pkl
+   |-- Serialize chunks in items.json
 ```
 
 ### Query Processing Flow

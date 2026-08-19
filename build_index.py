@@ -6,7 +6,6 @@ Uses sentence-transformers (local, no API key needed) for embeddings.
 """
 
 import json
-import pickle
 import sys
 import logging
 import numpy as np
@@ -16,8 +15,7 @@ from tqdm import tqdm
 from common import (
     DATA_FILE,
     INDEX_FILE,
-    EMBEDDINGS_FILE,
-    METADATA_FILE,
+    ITEMS_FILE,
     EMBEDDING_DIM,
     embed_text,
     load_embedding_model,
@@ -37,7 +35,7 @@ def simple_text_splitter(text, chunk_size=CHUNK_SIZE, overlap=CHUNK_OVERLAP):
     """Split text into overlapping chunks."""
     if len(text) <= chunk_size:
         return [text]
-    
+
     chunks = []
     start = 0
     while start < len(text):
@@ -61,7 +59,7 @@ def main():
     print("=" * 60)
     print("🔨 BUILDING FAISS INDEX")
     print("=" * 60)
-    
+
     # Load news data
     print(f"\n📂 Loading data from {DATA_FILE}...")
     try:
@@ -139,11 +137,11 @@ def main():
 
     for item, emb in zip(items, all_embeddings_list):
         item['embedding'] = emb
-    
+
     # Build FAISS index
     print(f"\n🔍 Building FAISS index...")
     all_embeddings = np.array([item['embedding'] for item in items], dtype=np.float32)
-    
+
     index = faiss.IndexFlatL2(EMBEDDING_DIM)
     index.add(all_embeddings)
     
@@ -161,26 +159,17 @@ def main():
         sys.exit(1)
     print(f"   ✅ {INDEX_FILE}")
     
-    # Save items with embeddings
+    # Save chunk text and metadata separately from the embeddings.
+    items_data = [{key: value for key, value in item.items() if key != "embedding"}
+                  for item in items]
     try:
-        with open(EMBEDDINGS_FILE, "wb") as f:
-            pickle.dump(items, f)
+        with open(ITEMS_FILE, "w", encoding="utf-8") as f:
+            json.dump(items_data, f, ensure_ascii=False, indent=2)
     except Exception as e:
-        logger.exception("Failed to write %s.", EMBEDDINGS_FILE)
-        print(f"❌ Failed to write {EMBEDDINGS_FILE}: {e}")
+        logger.exception("Failed to write %s.", ITEMS_FILE)
+        print(f"❌ Failed to write {ITEMS_FILE}: {e}")
         sys.exit(1)
-    print(f"   ✅ {EMBEDDINGS_FILE}")
-    
-    # Save metadata only (without embeddings, for lighter loading)
-    items_metadata = [{k: v for k, v in item.items() if k != 'embedding'} for item in items]
-    try:
-        with open(METADATA_FILE, "wb") as f:
-            pickle.dump(items_metadata, f)
-    except Exception as e:
-        logger.exception("Failed to write %s.", METADATA_FILE)
-        print(f"❌ Failed to write {METADATA_FILE}: {e}")
-        sys.exit(1)
-    print(f"   ✅ {METADATA_FILE}")
+    print(f"   ✅ {ITEMS_FILE}")
     
     print("\n" + "=" * 60)
     print("✅ INDEX BUILD COMPLETE")
