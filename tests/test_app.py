@@ -6,6 +6,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from common import ITEMS_FILE
+
 
 class TestDetectQueryType:
     @pytest.mark.parametrize("query", [
@@ -387,7 +389,7 @@ class TestLoadData:
             {"type": "text", "text": "chunk 2", "metadata": {"title": "A"}},
             {"type": "text", "text": "chunk 3", "metadata": {"title": "B"}},
         ]
-        (tmp_path / "items.json").write_text(json.dumps(items), encoding="utf-8")
+        (tmp_path / ITEMS_FILE).write_text(json.dumps(items), encoding="utf-8")
         (tmp_path / "eu_news_data.json").write_text(json.dumps([article_factory()]), encoding="utf-8")
         monkeypatch.chdir(tmp_path)
 
@@ -410,7 +412,7 @@ class TestLoadData:
     def test_reports_items_json_error_paths(
             self, app_module, monkeypatch, tmp_path, contents, expected):
         (tmp_path / "news_index.faiss").write_text("placeholder", encoding="utf-8")
-        (tmp_path / "items.json").write_text(contents, encoding="utf-8")
+        (tmp_path / ITEMS_FILE).write_text(contents, encoding="utf-8")
         monkeypatch.chdir(tmp_path)
 
         index, items, news_data, stats, status = app_module.load_data()

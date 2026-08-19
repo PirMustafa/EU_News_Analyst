@@ -5,38 +5,37 @@ Generates embeddings for all articles and creates a FAISS index for semantic sea
 Uses sentence-transformers (local, no API key needed) for embeddings.
 """
 
-import os
 import json
 import sys
 import logging
 import numpy as np
 import faiss
-from sentence_transformers import SentenceTransformer
 from tqdm import tqdm
+
+from common import (
+    DATA_FILE,
+    INDEX_FILE,
+    ITEMS_FILE,
+    EMBEDDING_DIM,
+    embed_text,
+    load_embedding_model,
+)
 
 logger = logging.getLogger(__name__)
 
 # Configuration
-DATA_FILE = "eu_news_data.json"
-INDEX_FILE = "news_index.faiss"
-ITEMS_FILE = "items.json"
-EMBEDDING_MODEL = "all-MiniLM-L6-v2"
-EMBEDDING_DIM = 384
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 200
 
-# Force CPU to avoid GPU compatibility issues
-os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
-
 # Load embedding model once
 print("Loading embedding model...")
-embed_model = SentenceTransformer(EMBEDDING_MODEL, device="cpu")
+embed_model = load_embedding_model()
 
 def simple_text_splitter(text, chunk_size=CHUNK_SIZE, overlap=CHUNK_OVERLAP):
     """Split text into overlapping chunks."""
     if len(text) <= chunk_size:
         return [text]
-    
+
     chunks = []
     start = 0
     while start < len(text):
@@ -48,20 +47,19 @@ def simple_text_splitter(text, chunk_size=CHUNK_SIZE, overlap=CHUNK_OVERLAP):
             break
     return chunks
 
-
 def generate_embedding(text):
-    """Generate one embedding for a text string."""
+    """Generate embedding for text using local sentence-transformers model."""
     try:
-        return embed_model.encode(text).tolist()
-    except Exception:
-        logger.exception("Failed to generate an embedding.")
+        return embed_text(embed_model, text)
+    except Exception as e:
+        print(f"Failed to embed text: {e}")
         return None
 
 def main():
     print("=" * 60)
     print("🔨 BUILDING FAISS INDEX")
     print("=" * 60)
-    
+
     # Load news data
     print(f"\n📂 Loading data from {DATA_FILE}...")
     try:

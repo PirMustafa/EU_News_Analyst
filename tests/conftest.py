@@ -135,6 +135,14 @@ def _fake_streamlit(secrets=None):
     for name in ("set_page_config", "markdown", "write", "caption", "error", "success",
                  "warning", "info", "audio", "title", "header", "subheader", "divider"):
         setattr(module, name, MagicMock())
+
+    errors_module = types.ModuleType("streamlit.errors")
+
+    class StreamlitSecretNotFoundError(Exception):
+        pass
+
+    errors_module.StreamlitSecretNotFoundError = StreamlitSecretNotFoundError
+    module.errors = errors_module
     return module
 
 
@@ -164,7 +172,9 @@ def scraper():
 @pytest.fixture
 def app_module(stub_modules, monkeypatch):
     """Freshly imported ``app`` with Streamlit and model backends stubbed out."""
-    monkeypatch.setitem(sys.modules, "streamlit", _fake_streamlit({"GROQ_API_KEY": "test-key"}))
+    fake_streamlit = _fake_streamlit({"GROQ_API_KEY": "test-key"})
+    monkeypatch.setitem(sys.modules, "streamlit", fake_streamlit)
+    monkeypatch.setitem(sys.modules, "streamlit.errors", fake_streamlit.errors)
     monkeypatch.setenv("GROQ_API_KEY", "test-key")
     monkeypatch.delitem(sys.modules, "app", raising=False)
     module = importlib.import_module("app")
