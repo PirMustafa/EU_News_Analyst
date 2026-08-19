@@ -16,7 +16,7 @@ showSidebarNavigation = true
 # Controls whether uncaught app exceptions are displayed in the browser. By
 # default, this is set to True and Streamlit displays app exceptions and
 # associated tracebacks in the browser.
-showErrorDetails = true
+showErrorDetails = false
 
 [server]
 
@@ -27,10 +27,7 @@ folderWatchBlacklist = ['']
 # Change the type of file watcher used by Streamlit, or turn it off completely.
 fileWatcherType = "auto"
 
-# Symmetric key used to produce signed cookies. If deploying on multiple replicas,
-# this should be set to the same value across all replicas to ensure they all
-# share the same secret.
-cookieSecret = "a-random-key-appears-here"
+# Set STREAMLIT_SERVER_COOKIE_SECRET or the equivalent Streamlit secret in deployment.
 
 # If false, will attempt to open a new browser tab on the local development
 # machine when `streamlit run` is called.
@@ -40,7 +37,7 @@ headless = true
 runOnSave = false
 
 # The address where the server will listen for client and browser connections.
-address = "0.0.0.0"
+address = "127.0.0.1"
 
 # The port where the server will listen for client and browser connections.
 port = 8501
@@ -55,10 +52,10 @@ enableCORS = true
 enableXsrfProtection = true
 
 # Max size, in megabytes, for files uploaded with the file_uploader.
-maxUploadSize = 200
+maxUploadSize = 10
 
 # Max size, in megabytes, of messages that can be sent via the WebSocket connection.
-maxMessageSize = 200
+maxMessageSize = 10
 
 # Enables support for websocket compression.
 enableWebsocketCompression = false

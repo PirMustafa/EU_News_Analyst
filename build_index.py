@@ -7,7 +7,6 @@ Uses sentence-transformers (local, no API key needed) for embeddings.
 
 import os
 import json
-import pickle
 import numpy as np
 import faiss
 from sentence_transformers import SentenceTransformer
@@ -16,12 +15,11 @@ from tqdm import tqdm
 # Configuration
 DATA_FILE = "eu_news_data.json"
 INDEX_FILE = "news_index.faiss"
-EMBEDDINGS_FILE = "items_with_embeddings.pkl"
-METADATA_FILE = "items_metadata.pkl"
 EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 EMBEDDING_DIM = 384
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 200
+ITEMS_FILE = "items.json"
 
 # Force CPU to avoid GPU compatibility issues
 os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
@@ -102,13 +100,9 @@ def main():
             all_embeddings_list.extend(embeddings.tolist())
             pbar.update(len(batch))
 
-    for item, emb in zip(items, all_embeddings_list):
-        item['embedding'] = emb
-    failed_count = 0
-    
     # Build FAISS index
     print(f"\n🔍 Building FAISS index...")
-    all_embeddings = np.array([item['embedding'] for item in items], dtype=np.float32)
+    all_embeddings = np.array(all_embeddings_list, dtype=np.float32)
     
     index = faiss.IndexFlatL2(EMBEDDING_DIM)
     index.add(all_embeddings)
@@ -122,16 +116,10 @@ def main():
     faiss.write_index(index, INDEX_FILE)
     print(f"   ✅ {INDEX_FILE}")
     
-    # Save items with embeddings
-    with open(EMBEDDINGS_FILE, "wb") as f:
-        pickle.dump(items, f)
-    print(f"   ✅ {EMBEDDINGS_FILE}")
-    
-    # Save metadata only (without embeddings, for lighter loading)
-    items_metadata = [{k: v for k, v in item.items() if k != 'embedding'} for item in items]
-    with open(METADATA_FILE, "wb") as f:
-        pickle.dump(items_metadata, f)
-    print(f"   ✅ {METADATA_FILE}")
+    # Save chunk text and metadata separately from the embeddings.
+    with open(ITEMS_FILE, "w", encoding="utf-8") as f:
+        json.dump(items, f, ensure_ascii=False, indent=2)
+    print(f"   ✅ {ITEMS_FILE}")
     
     print("\n" + "=" * 60)
     print("✅ INDEX BUILD COMPLETE")

@@ -10,10 +10,13 @@ from datetime import datetime
 import tempfile
 import asyncio
 import numpy as np
+from urllib.parse import urlparse
 
 # --- CONFIGURATION ---
 CURRENT_DATE = datetime.now()
 DATE_STR = CURRENT_DATE.strftime("%A, %d %B %Y")
+MAX_QUERY_CHARS = 1000
+MAX_AUDIO_BYTES = 10 * 1024 * 1024
 
 st.set_page_config(
     page_title=f"EU Intelligence Briefing - {CURRENT_DATE.strftime('%d %b %Y')}",
@@ -188,9 +191,8 @@ def load_dependencies():
     os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
     from sentence_transformers import SentenceTransformer
     import faiss
-    import pickle
     embed_model = SentenceTransformer("all-MiniLM-L6-v2", device="cpu")
-    return embed_model, faiss, pickle
+    return embed_model, faiss
 
 # --- API SETUP ---
 # Read Groq API key from secrets or environment
@@ -199,7 +201,7 @@ groq_api_key = None
 # 1. Try Streamlit secrets first
 try:
     groq_api_key = st.secrets.get("GROQ_API_KEY")
-except:
+except FileNotFoundError:
     pass
 
 # 2. Try environment variable
@@ -210,19 +212,19 @@ if not groq_api_key:
     st.error("CRITICAL: No GROQ_API_KEY found. Please set it in .streamlit/secrets.toml")
     st.stop()
 
-embed_model, faiss, pickle = load_dependencies()
+embed_model, faiss = load_dependencies()
 
 # --- DATA LOADING ---
 @st.cache_resource
 def load_data():
-    """Load FAISS index and embeddings data."""
+    """Load FAISS index and chunk metadata."""
     try:
         index = faiss.read_index("news_index.faiss")
-        with open("items_with_embeddings.pkl", "rb") as f:
-            items_with_embeddings = pickle.load(f)
-        
+        with open("items.json", 'r', encoding='utf-8') as f:
+            items_data = json.load(f)
+
         items = []
-        for item in items_with_embeddings:
+        for item in items_data:
             items.append({
                 "text": item["text"],
                 "meta": item["metadata"]
@@ -234,7 +236,7 @@ def load_data():
             with open("eu_news_data.json", 'r', encoding='utf-8') as f:
                 news_data = json.load(f)
         
-        unique_articles = len(set(item["metadata"]["title"] for item in items_with_embeddings))
+        unique_articles = len(set(item["metadata"]["title"] for item in items_data))
         return index, items, news_data, {"articles": unique_articles, "chunks": len(items)}, "Online"
     except Exception as e:
         return None, [], [], {}, f"Error: {str(e)}"
@@ -295,6 +297,11 @@ async def text_to_speech(text, voice="en-GB-SoniaNeural"):
 
 def speech_to_text(audio_bytes):
     """Convert speech to text."""
+    if len(audio_bytes) > MAX_AUDIO_BYTES:
+        st.error("Audio file is too large. Please use an audio file no larger than 10 MB.")
+        return None
+
+    temp_path = None
     try:
         import speech_recognition as sr
         
@@ -306,11 +313,35 @@ def speech_to_text(audio_bytes):
         with sr.AudioFile(temp_path) as source:
             audio_data = recognizer.record(source)
             text = recognizer.recognize_google(audio_data)
-        
-        os.unlink(temp_path)
         return text
     except Exception as e:
         return None
+    finally:
+        if temp_path:
+            try:
+                os.unlink(temp_path)
+            except FileNotFoundError:
+                pass
+
+
+def validate_query(user_input):
+    """Strip and validate a user query before it reaches the prompt."""
+    query = user_input.strip() if isinstance(user_input, str) else ""
+    if not query:
+        st.error("Please enter a question.")
+        return None
+    if len(query) > MAX_QUERY_CHARS:
+        st.error(f"Your question is too long. Please keep it under {MAX_QUERY_CHARS} characters.")
+        return None
+    return query
+
+
+def is_safe_source_link(link):
+    """Allow only absolute HTTP(S) links in rendered source citations."""
+    if not isinstance(link, str):
+        return False
+    parsed = urlparse(link)
+    return parsed.scheme.lower() in {"http", "https"} and bool(parsed.netloc)
 
 # --- QUERY TYPE DETECTION ---
 def detect_query_type(query, conversation_history):
@@ -611,6 +642,8 @@ with st.sidebar:
     if audio_value:
         with st.spinner("Transcribing..."):
             transcribed = speech_to_text(audio_value.getvalue())
+            if transcribed is not None:
+                transcribed = validate_query(transcribed)
             if transcribed:
                 st.session_state.transcribed_text = transcribed
                 st.success(f"Heard: {transcribed}")
@@ -633,6 +666,8 @@ with st.sidebar:
         if audio_file:
             with st.spinner("Transcribing..."):
                 transcribed = speech_to_text(audio_file.getvalue())
+                if transcribed is not None:
+                    transcribed = validate_query(transcribed)
                 if transcribed:
                     st.success(f"Transcribed: {transcribed}")
                     if st.button("Use this query", key="use_file_query"):
@@ -679,7 +714,7 @@ for msg in st.session_state.messages:
                     for src in msg['sources']:
                         st.markdown(f"**{src['title']}**")
                         st.caption(f"{src['source']} | {src['date']}")
-                        if src.get('link'):
+                        if src.get('link') and is_safe_source_link(src['link']):
                             st.markdown(f"[Read original]({src['link']})")
                         st.markdown("---")
             
@@ -704,6 +739,8 @@ else:
         if main_audio and not st.session_state.get('main_audio_processed'):
             with st.spinner("Listening..."):
                 transcribed = speech_to_text(main_audio.getvalue())
+                if transcribed is not None:
+                    transcribed = validate_query(transcribed)
                 if transcribed:
                     st.session_state.voice_query = transcribed
                     st.session_state.main_audio_processed = True
@@ -712,6 +749,7 @@ else:
             st.session_state.main_audio_processed = False
 
 # --- PROCESS QUERY ---
+user_input = validate_query(user_input) if user_input else None
 if user_input and index is not None:
     # Add user message
     st.session_state.messages.append({"role": "user", "content": user_input})
