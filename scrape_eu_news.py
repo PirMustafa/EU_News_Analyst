@@ -14,6 +14,7 @@ How it works:
 import json
 import logging
 import os
+import sys
 import requests
 from datetime import datetime
 from bs4 import BeautifulSoup
@@ -23,6 +24,15 @@ import tempfile
 from urllib.parse import urlparse
 
 from common import DATA_FILE, DISPLAY_DATE_FORMAT, dedupe_by
+
+# Windows consoles default to cp1252, which cannot encode the emoji used in the
+# progress output below; force UTF-8 so the script runs without PYTHONIOENCODING.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        try:
+            _stream.reconfigure(encoding="utf-8")
+        except Exception:  # pragma: no cover - stream may not support it
+            pass
 
 # --- CONFIGURATION ---
 logger = logging.getLogger(__name__)

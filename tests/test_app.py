@@ -121,14 +121,49 @@ def todays_articles(app_module, article_factory):
 
 
 class TestAnalyzeQuery:
-    def test_returns_placeholder_when_no_news_for_today(self, app_module, article_factory):
-        stale = [article_factory(date="Monday, 01 January 1990")]
+    def test_returns_placeholder_when_archive_has_no_usable_dates(
+            self, app_module, article_factory):
+        undated = [article_factory(date=""), article_factory(date="not a date")]
+
+        for archive in ([], undated):
+            result = app_module.analyze_query("headlines", archive, index=None, items=[])
+
+            assert "No news data available" in result["analysis"]
+            assert app_module.DATE_STR in result["analysis"]
+            assert result["sources"] == []
+            assert result["query_type"] == "overview"
+
+    def test_falls_back_to_most_recent_archive_date_when_nothing_is_dated_today(
+            self, app_module, monkeypatch, article_factory):
+        generate = MagicMock(return_value="## Briefing")
+        monkeypatch.setattr(app_module, "groq_generate", generate)
+        stale = [article_factory(title="Old story", date="Monday, 01 January 1990")]
 
         result = app_module.analyze_query("headlines", stale, index=None, items=[])
 
-        assert "No news data available" in result["analysis"]
-        assert result["sources"] == []
-        assert result["query_type"] == "overview"
+        # The briefing is served from the archive instead of dead-ending, and it is
+        # labelled with the real article date so the user can see it is not today's.
+        assert result["analysis"] == "## Briefing"
+        assert [s["title"] for s in result["sources"]] == ["Old story"]
+        prompt = generate.call_args.args[0]
+        assert "Monday, 01 January 1990" in prompt
+        assert app_module.DATE_STR not in prompt
+
+    def test_fallback_uses_the_chronologically_latest_date_not_the_largest_string(
+            self, app_module, monkeypatch, article_factory):
+        generate = MagicMock(return_value="## Briefing")
+        monkeypatch.setattr(app_module, "groq_generate", generate)
+        # 'Tuesday, 02 June 2026' sorts after 'Monday, 29 June 2026' as a string,
+        # so a lexicographic max would pick the wrong (older) article.
+        news = [
+            article_factory(title="June 2nd story", date="Tuesday, 02 June 2026"),
+            article_factory(title="June 29th story", date="Monday, 29 June 2026"),
+        ]
+
+        result = app_module.analyze_query("headlines", news, index=None, items=[])
+
+        assert [s["title"] for s in result["sources"]] == ["June 29th story"]
+        assert "Monday, 29 June 2026" in generate.call_args.args[0]
 
     def test_overview_mode_returns_generated_briefing_and_ten_sources(
             self, app_module, monkeypatch, todays_articles):
@@ -420,3 +455,42 @@ class TestLoadData:
         assert index is None
         assert (items, news_data, stats) == ([], [], {})
         assert expected in status
+
+
+class TestBriefingFreshness:
+    """The chrome must never claim a stale briefing is today's live feed."""
+
+    def test_todays_briefing_is_labelled_today_and_live(self, app_module):
+        assert app_module.briefing_freshness(app_module.DATE_STR) == (True, "Today", "LIVE")
+
+    def test_older_briefing_is_not_labelled_today_and_does_not_claim_live(self, app_module):
+        is_current, stat_label, badge = app_module.briefing_freshness("Monday, 01 January 1990")
+
+        assert is_current is False
+        assert stat_label != "Today"
+        assert badge != "LIVE"
+
+    def test_rendered_chrome_agrees_with_the_resolved_briefing_date(self, app_module):
+        """Header badge and sidebar tile must match whichever branch is live.
+
+        Deliberately date-independent: it asserts the chrome is consistent with
+        ``_briefing_date`` whatever today happens to be, so it catches the regression
+        where a fallback briefing was served under a 'Today' counter and a LIVE badge.
+        """
+        rendered = [call.args[0] for call in app_module.st.markdown.call_args_list
+                    if call.args and isinstance(call.args[0], str)]
+        header = next(h for h in rendered if "EU DAILY INTELLIGENCE BRIEFING" in h)
+        tiles = [h for h in rendered if 'class="sidebar-stat"' in h]
+        assert len(tiles) == 2
+        briefing_tile = tiles[0]
+
+        assert f'<div class="stat-number">{app_module.todays_count}</div>' in briefing_tile
+
+        if app_module._briefing_date == app_module.DATE_STR:
+            assert ">LIVE</span>" in header
+            assert "briefing from" not in header
+            assert ">Today</div>" in briefing_tile
+        else:
+            assert ">LIVE</span>" not in header
+            assert f"briefing from {app_module._briefing_date}" in header
+            assert ">Today</div>" not in briefing_tile

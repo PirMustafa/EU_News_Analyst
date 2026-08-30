@@ -43,7 +43,7 @@ MAX_AUDIO_BYTES = 10 * 1024 * 1024
 
 st.set_page_config(
     page_title=f"EU Intelligence Briefing - {CURRENT_DATE.strftime('%d %b %Y')}",
-    page_icon="",
+    page_icon="🇪🇺",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -501,6 +501,65 @@ def detect_query_type(query, conversation_history):
     
     return "detailed"
 
+# --- BRIEFING DATE RESOLUTION ---
+def parse_article_date(value):
+    """Parse an article date string (DISPLAY_DATE_FORMAT). Return None if unparseable."""
+    try:
+        return datetime.strptime((value or '').strip(), common.DISPLAY_DATE_FORMAT)
+    except (ValueError, TypeError):
+        return None
+
+
+def resolve_briefing_news(news_data):
+    """Pick the articles the briefing should be built from.
+
+    Prefers articles dated today. When the archive has nothing for today -- stale
+    data, or simply a weekend/holiday with no publications -- fall back to the most
+    recent date actually present so the app still serves a briefing instead of a dead
+    end. Dates are compared as datetimes, never as strings, because the display format
+    ("%A, %d %B %Y") does not sort lexicographically.
+
+    Returns a ``(briefing_date, articles)`` tuple. ``articles`` is empty only when the
+    archive holds no usable dated article at all.
+    """
+    articles = news_data or []
+    todays_news = [a for a in articles if a.get('date', '').strip() == DATE_STR]
+    if todays_news:
+        return DATE_STR, todays_news
+
+    latest = None
+    for article in articles:
+        parsed = parse_article_date(article.get('date', ''))
+        if parsed is not None and (latest is None or parsed > latest):
+            latest = parsed
+
+    if latest is None:
+        if articles:
+            logger.warning(
+                "None of the %d archived articles have a date matching %r, so the briefing "
+                "will report that no news data is available. Check the scraper output and the "
+                "locale used to format article dates.",
+                len(articles), common.DISPLAY_DATE_FORMAT,
+            )
+        return DATE_STR, []
+
+    fallback = [a for a in articles
+                if parse_article_date(a.get('date', '')) == latest]
+    return latest.strftime(common.DISPLAY_DATE_FORMAT), fallback
+
+
+def briefing_freshness(briefing_date):
+    """Describe a resolved briefing date for the UI.
+
+    Returns ``(is_current, stat_label, badge_text)``. When the briefing is not from
+    today the sidebar tile must not be labelled "Today" and the header badge must not
+    claim the feed is live -- otherwise the chrome contradicts the content.
+    """
+    if briefing_date == DATE_STR:
+        return True, "Today", "LIVE"
+    return False, "Latest", "ARCHIVE"
+
+
 # --- INTELLIGENCE ANALYST FUNCTION ---
 def analyze_query(query, news_data, index, items, query_type="auto", conversation_history=None):
     """Generate intelligence analysis - either overview or detailed."""
@@ -509,12 +568,12 @@ def analyze_query(query, news_data, index, items, query_type="auto", conversatio
     if query_type == "auto":
         query_type = detect_query_type(query, conversation_history or [])
     
-    # Get today's news
-    todays_news = [a for a in news_data if a.get('date', '').strip() == DATE_STR]
+    # Get the news the briefing is built from (today's, else the most recent available)
+    briefing_date, todays_news = resolve_briefing_news(news_data)
     
     if not todays_news:
         return {
-            "analysis": f"No news data available for {DATE_STR}. The archive may need to be updated by running the scraper.",
+            "analysis": f"No news data available for {briefing_date}. The archive may need to be updated by running the scraper.",
             "thoughts": "",
             "sources": [],
             "query_type": query_type
@@ -525,7 +584,7 @@ def analyze_query(query, news_data, index, items, query_type="auto", conversatio
         sources.append({
             'title': article.get('title', 'Untitled'),
             'source': article.get('source', 'Unknown'),
-            'date': article.get('date', DATE_STR),
+            'date': article.get('date', briefing_date),
             'link': article.get('link', ''),
             'content': article.get('content', '')[:300]
         })
@@ -545,10 +604,10 @@ def analyze_query(query, news_data, index, items, query_type="auto", conversatio
         
         overview_prompt = f"""You are an EU news briefing assistant. Provide a concise daily briefing.
 
-TODAY'S DATE: {DATE_STR}
+BRIEFING DATE: {briefing_date}
 TOTAL ARTICLES: {len(todays_news)}
 
-TODAY'S HEADLINES:
+HEADLINES:
 {headlines_list}
 
 BRIEF CONTENT:
@@ -556,9 +615,9 @@ BRIEF CONTENT:
 
 Provide a response in this EXACT format:
 
-## Today's EU News Briefing ({DATE_STR})
+## EU News Briefing ({briefing_date})
 
-**{len(todays_news)} articles published today**
+**{len(todays_news)} articles published on {briefing_date}**
 
 ### Top Stories
 
@@ -566,7 +625,7 @@ Provide a response in this EXACT format:
 
 ### Quick Analysis
 
-[2-3 sentences on the main themes or trends across today's news]
+[2-3 sentences on the main themes or trends across these articles]
 
 ### Want to Know More?
 
@@ -637,7 +696,7 @@ Keep it brief and scannable. No deep analysis yet - save that for when they ask.
             context_parts.append(f"""
 ARTICLE: {article.get('title', 'Untitled')}
 SOURCE: {article.get('source', 'Unknown')}
-DATE: {article.get('date', DATE_STR)}
+DATE: {article.get('date', briefing_date)}
 FULL CONTENT: {article.get('content', '')}
 ---""")
         
@@ -645,7 +704,7 @@ FULL CONTENT: {article.get('content', '')}
         
         detailed_prompt = f"""You are a senior EU policy analyst providing detailed analysis.
 
-TODAY'S DATE: {DATE_STR}
+BRIEFING DATE: {briefing_date}
 
 USER QUESTION: {query}
 
@@ -711,7 +770,9 @@ if "processing" not in st.session_state:
 
 # --- LOAD DATA ---
 index, items, news_data, stats, status = load_data()
-todays_count = len([a for a in news_data if a.get('date') == DATE_STR])
+_briefing_date, _briefing_articles = resolve_briefing_news(news_data)
+_briefing_is_current, _briefing_stat_label, _briefing_badge = briefing_freshness(_briefing_date)
+todays_count = len(_briefing_articles)
 
 # --- SIDEBAR ---
 with st.sidebar:
@@ -732,7 +793,7 @@ with st.sidebar:
         st.markdown(f"""
         <div class="sidebar-stat">
             <div class="stat-number">{todays_count}</div>
-            <div class="stat-label">Today</div>
+            <div class="stat-label">{_briefing_stat_label}</div>
         </div>
         """, unsafe_allow_html=True)
     with col2:
@@ -829,12 +890,16 @@ with st.sidebar:
         st.rerun()
 
 # --- MAIN HEADER ---
+# When the briefing is stale, say so deterministically here: the LLM may not echo the
+# briefing date, so the header is the only reliable staleness signal.
+_briefing_note = "" if _briefing_is_current else f" &middot; briefing from {_briefing_date}"
+_badge_style = "" if _briefing_is_current else ' style="background: #f59e0b;"'
 st.markdown(f"""
 <div class="header-container">
     <h1 class="header-title">EU DAILY INTELLIGENCE BRIEFING</h1>
     <p class="header-subtitle">
-        {DATE_STR}
-        <span class="status-badge">LIVE</span>
+        {DATE_STR}{_briefing_note}
+        <span class="status-badge"{_badge_style}>{_briefing_badge}</span>
     </p>
 </div>
 """, unsafe_allow_html=True)

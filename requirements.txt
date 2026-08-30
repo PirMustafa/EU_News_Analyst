@@ -1,40 +1,25 @@
 # --- Core App Framework ---
 streamlit>=1.61.1
 
-# --- Google Generative AI Backend ---
-google-generativeai>=0.3.0
-google-api-core>=2.11.0
-
-# --- LangChain & Text Processing ---
-langchain>=1.3.15
-langchain-community>=0.4.2
-langchain-text-splitters>=0.0.1
+# --- Embeddings & ML Runtime ---
+sentence-transformers>=3.0.0
+# torch comes in via sentence-transformers. The extra index below makes pip prefer
+# the CPU-only build: PEP 440 sorts the local version `2.x.y+cpu` above plain
+# `2.x.y`, so this avoids the ~2.5 GB CUDA wheel that breaks Streamlit Cloud.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch
 
 # --- Vector Database & Math ---
 faiss-cpu>=1.7.4
 numpy>=1.24.0
-pandas>=2.1.0
 
 # --- Web Scraping & Data Ingestion ---
 requests>=2.34.2
 beautifulsoup4>=4.12.0
-feedparser>=6.0.10
-lxml>=5.1.0
-selenium>=4.15.0
-webdriver-manager>=4.0.0
 
 # --- Voice & Audio Processing ---
 SpeechRecognition>=3.10.0
-pydub>=0.25.1
 edge-tts>=6.1.0
 
-# --- PDF Processing ---
-PyMuPDF>=1.28.2
-tabula-py>=2.9.0
-
 # --- Development Utilities ---
-python-dotenv>=1.0.0
 tqdm>=4.66.0
-ipython>=8.12.0
-jupyter>=1.0.0
-notebook>=7.0.0

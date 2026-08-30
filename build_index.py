@@ -21,6 +21,15 @@ from common import (
     load_embedding_model,
 )
 
+# Windows consoles default to cp1252, which cannot encode the emoji used in the
+# progress output below; force UTF-8 so the script runs without PYTHONIOENCODING.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        try:
+            _stream.reconfigure(encoding="utf-8")
+        except Exception:  # pragma: no cover - stream may not support it
+            pass
+
 logger = logging.getLogger(__name__)
 
 # Configuration
